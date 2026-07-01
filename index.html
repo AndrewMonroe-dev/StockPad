@@ -4,21 +4,22 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>StockPad — Distributor Inventory Tracker</title>
+<link rel="icon" id="app-favicon" href="">
 <script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.min.js"></script>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js"></script>
 <style>
   :root{
-    --bg:#0A0B0F;
-    --panel:#12141B;
-    --panel2:#181B24;
-    --border:#252938;
-    --text:#E6E8EF;
-    --text-dim:#8A8FA3;
+    --bg:#F5F6F8;
+    --panel:#FFFFFF;
+    --panel2:#F0F1F4;
+    --border:#DFE2E8;
+    --text:#1A1D24;
+    --text-dim:#65697A;
     --accent:#3B82F6;
-    --good:#22C55E;
-    --warn:#F59E0B;
-    --bad:#EF4444;
+    --good:#15803D;
+    --warn:#B45309;
+    --bad:#DC2626;
     --mono:'SF Mono',ui-monospace,'Cascadia Code',Consolas,monospace;
   }
   *{box-sizing:border-box;}
@@ -144,7 +145,7 @@
   }
   tbody td{
     padding:8px 14px;
-    border-bottom:1px solid rgba(255,255,255,0.03);
+    border-bottom:1px solid rgba(0,0,0,0.06);
     font-family:var(--mono);
     font-size:12px;
   }
@@ -239,9 +240,14 @@
 <body>
 
 <header>
-  <div>
-    <h1>Stock<span>Pad</span></h1>
-    <p>Distributor inventory tracker — flags SKUs running low relative to sales pace</p>
+  <div style="display:flex;align-items:center;gap:12px;">
+    <div id="app-logo-badge" style="display:none;width:36px;height:36px;flex-shrink:0;background:#fff;border:1px solid var(--border);border-radius:8px;align-items:center;justify-content:center;overflow:hidden;">
+      <img id="app-logo-img" src="" style="width:28px;height:28px;object-fit:contain;">
+    </div>
+    <div>
+      <h1>Stock<span>Pad</span></h1>
+      <p>Distributor inventory tracker — flags SKUs running low relative to sales pace</p>
+    </div>
   </div>
   <div class="hdr-actions">
     <button class="ghost" onclick="exportBackup()">Export backup</button>
@@ -762,6 +768,27 @@ function renderLogoStatus(){
   } else {
     el.textContent = 'No logo set — upload one to appear in Copy Formatted recaps.';
   }
+
+  const dataUri = STOCKPAD_LOGO_B64 ? `data:image/png;base64,${STOCKPAD_LOGO_B64}` : '';
+
+  // header badge, top-left of the app itself
+  const badge = document.getElementById('app-logo-badge');
+  const badgeImg = document.getElementById('app-logo-img');
+  if(badge && badgeImg){
+    if(STOCKPAD_LOGO_B64){
+      badgeImg.src = dataUri;
+      badge.style.display = 'flex';
+    } else {
+      badge.style.display = 'none';
+      badgeImg.src = '';
+    }
+  }
+
+  // browser tab favicon
+  const favicon = document.getElementById('app-favicon');
+  if(favicon){
+    favicon.href = dataUri || '';
+  }
 }
 function handleLogoUpload(evt){
   const file = evt.target.files[0];
@@ -960,7 +987,7 @@ function renderAll(){
           const current = group.reduce((a,b)=> (b._vintageYear>a._vintageYear ? b : a));
           if(current !== it){
             const subTr = document.createElement('tr');
-            subTr.style.background = 'rgba(255,255,255,0.02)';
+            subTr.style.background = 'rgba(0,0,0,0.03)';
             const currentLabel = sec.cols[0]==='brand'
               ? `${current.brand} — ${current.product}`
               : current.description;
