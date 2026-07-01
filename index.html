@@ -4,7 +4,7 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>StockPad — Distributor Inventory Tracker</title>
-<link rel="icon" id="app-favicon" href="">
+<link rel="icon" href="logo.png">
 <script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.min.js"></script>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js"></script>
@@ -241,8 +241,8 @@
 
 <header>
   <div style="display:flex;align-items:center;gap:12px;">
-    <div id="app-logo-badge" style="display:none;width:36px;height:36px;flex-shrink:0;background:#fff;border:1px solid var(--border);border-radius:8px;align-items:center;justify-content:center;overflow:hidden;">
-      <img id="app-logo-img" src="" style="width:28px;height:28px;object-fit:contain;">
+    <div style="width:36px;height:36px;flex-shrink:0;background:#fff;border:1px solid var(--border);border-radius:8px;display:flex;align-items:center;justify-content:center;overflow:hidden;">
+      <img src="logo.png" style="width:28px;height:28px;object-fit:contain;" alt="StockPad">
     </div>
     <div>
       <h1>Stock<span>Pad</span></h1>
@@ -314,8 +314,8 @@
   </div>
 
   <div class="mapping-panel">
-    <h3>Recap logo</h3>
-    <p>Shown top-left and centered at the bottom of the Copy Formatted recap. Stored locally in this browser only — not baked into the app file — so re-upload once here after pasting a fresh version of index.html.</p>
+    <h3>Recap logo (email only)</h3>
+    <p>Used only in the Copy Formatted / Outlook email recap, embedded directly so it survives being pasted (Outlook blocks externally-linked images). The header badge and browser tab icon use logo.png directly from the repo and don't need this.</p>
     <div style="display:flex;align-items:center;gap:10px;">
       <button class="ghost" onclick="document.getElementById('logoFile').click()">Upload logo</button>
       <input type="file" id="logoFile" accept="image/*" style="display:none" onchange="handleLogoUpload(event)">
@@ -759,7 +759,9 @@ function removeMapping(idx){
 function escAttr(s){ return String(s).replace(/"/g,'&quot;'); }
 
 /* ---- custom exclusion keywords ---- */
-/* ---- logo (stored locally, not baked into the file) ---- */
+/* ---- logo for the Copy Formatted email recap only — the app's own header badge and
+   browser tab favicon use a static logo.png in the repo instead (see <head> and header markup),
+   since those don't have Outlook's external-image-blocking problem that the emailed recap does. ---- */
 function renderLogoStatus(){
   const el = document.getElementById('logo-status');
   if(!el) return;
@@ -767,27 +769,6 @@ function renderLogoStatus(){
     el.innerHTML = `<img src="data:image/png;base64,${STOCKPAD_LOGO_B64}" style="width:20px;height:20px;border-radius:3px;vertical-align:middle;margin-right:6px;"> Logo set <button class="ghost" style="padding:2px 8px;font-size:11px;margin-left:8px;" onclick="removeLogo()">Remove</button>`;
   } else {
     el.textContent = 'No logo set — upload one to appear in Copy Formatted recaps.';
-  }
-
-  const dataUri = STOCKPAD_LOGO_B64 ? `data:image/png;base64,${STOCKPAD_LOGO_B64}` : '';
-
-  // header badge, top-left of the app itself
-  const badge = document.getElementById('app-logo-badge');
-  const badgeImg = document.getElementById('app-logo-img');
-  if(badge && badgeImg){
-    if(STOCKPAD_LOGO_B64){
-      badgeImg.src = dataUri;
-      badge.style.display = 'flex';
-    } else {
-      badge.style.display = 'none';
-      badgeImg.src = '';
-    }
-  }
-
-  // browser tab favicon
-  const favicon = document.getElementById('app-favicon');
-  if(favicon){
-    favicon.href = dataUri || '';
   }
 }
 function handleLogoUpload(evt){
