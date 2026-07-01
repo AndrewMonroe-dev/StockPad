@@ -161,6 +161,7 @@
   .pill.low{background:rgba(239,68,68,0.15);color:var(--bad);}
   .pill.ok{background:rgba(34,197,94,0.12);color:var(--good);}
   .pill.dead{background:rgba(138,143,163,0.15);color:var(--text-dim);}
+  .pill.thin{background:rgba(138,143,163,0.15);color:var(--text-dim);}
   button{
     background:var(--panel2);
     border:1px solid var(--border);
@@ -429,7 +430,10 @@ async function handleRNDC(file){
     items.forEach(it => {
       const rate = weeklyRateOf(it);
       it.weeklyRate = rate;
-      if(rate <= 0){
+      // Rule: no LY YTD volume and under 1 case YTD this year = too thin to mean anything, never flag
+      if(it.ytdLY === 0 && it.ytd < 1){
+        it.flagStatus = 'thin'; it.coverageWeeks = null;
+      } else if(rate <= 0){
         it.flagStatus = 'dead'; it.coverageWeeks = null;
       } else {
         const coverage = (it.onHand + it.onOrder) / rate;
@@ -739,6 +743,39 @@ function isItemExcluded(it){
   return shouldExcludeItem(text, brand);
 }
 
+/* ---- multi-vintage grouping: same product, different vintage years ---- */
+function extractVintageYear(text){
+  if(!text) return null;
+  const m4 = /\b(19\d{2}|20\d{2})\b/.exec(text);
+  if(m4) return parseInt(m4[1],10);
+  const m2 = /^\S+\s+(\d{2})(?:\/\d{2})?\s+/.exec(text);
+  if(m2){
+    const yy = parseInt(m2[1],10);
+    return yy <= 50 ? 2000+yy : 1900+yy;
+  }
+  return null;
+}
+function baseNameNoVintage(text){
+  if(!text) return '';
+  let t = text;
+  const m4 = /\b(19\d{2}|20\d{2})\b/.exec(t);
+  if(m4){
+    t = (t.slice(0,m4.index) + t.slice(m4.index+m4[0].length)).replace(/\s{2,}/g,' ').trim();
+  } else {
+    const m2 = /^(\S+)\s+\d{2}(?:\/\d{2})?\s+(.*)$/.exec(t);
+    if(m2) t = (m2[1] + ' ' + m2[2]).trim();
+  }
+  return t.toUpperCase().replace(/[^A-Z0-9]+/g,' ').trim();
+}
+
+/* ---- number formatting: whole numbers stay whole, everything else caps at 1 decimal ---- */
+function fmtNum(v){
+  if(v === null || v === undefined || v === '') return '—';
+  const n = Number(v);
+  if(isNaN(n)) return String(v);
+  return Number.isInteger(n) ? String(n) : n.toFixed(1);
+}
+
 /* ============================================================
    RENDER RESULTS
    ============================================================ */
@@ -791,23 +828,58 @@ function renderAll(){
     table.innerHTML = thead;
 
     const tbody = document.createElement('tbody');
-    // sort: low first, then dead, then ok
-    const order = {low:0, dead:1, ok:2};
+    // sort: low first, then thin/dead, then ok
+    const order = {low:0, thin:1, dead:1, ok:2};
+
+    // build vintage groups (same base product name across multiple vintage years)
+    const groupMap = {};
+    data.forEach(it => {
+      const { text } = itemSearchText(it);
+      it._vintageYear = extractVintageYear(text);
+      it._baseName = baseNameNoVintage(text);
+      if(it._vintageYear !== null){
+        if(!groupMap[it._baseName]) groupMap[it._baseName] = [];
+        groupMap[it._baseName].push(it);
+      }
+    });
+
     [...data].sort((a,b)=>(order[a.flagStatus]??3)-(order[b.flagStatus]??3)).forEach(it => {
       const tr = document.createElement('tr');
       if(it.flagStatus==='low') tr.className='flag';
       let nameCell = sec.cols[0]==='brand' ? `<b>${it.brand}</b><br><span style="color:var(--text-dim)">${it.product}</span>` : it.description;
       let rowHtml = `<td class="name">${nameCell}</td>`;
       sec.numCols.forEach(nc => {
-        let v = it[nc.k];
-        if(v===null||v===undefined) rowHtml += `<td>—</td>`;
-        else rowHtml += `<td>${nc.fmt ? Number(v).toFixed(nc.fmt) : v}</td>`;
+        rowHtml += `<td>${fmtNum(it[nc.k])}</td>`;
       });
-      const pillClass = it.flagStatus==='low' ? 'low' : (it.flagStatus==='dead' ? 'dead' : 'ok');
-      const pillLabel = it.flagStatus==='low' ? 'LOW' : (it.flagStatus==='dead' ? 'NO SALES' : 'OK');
+      const pillMap = { low:['low','LOW'], dead:['dead','NO SALES'], thin:['thin','TOO THIN'], ok:['ok','OK'] };
+      const [pillClass, pillLabel] = pillMap[it.flagStatus] || ['ok','OK'];
       rowHtml += `<td><span class="pill ${pillClass}">${pillLabel}</span></td>`;
       tr.innerHTML = rowHtml;
       tbody.appendChild(tr);
+
+      // if this is a flagged low item and it's part of a multi-vintage group, show the
+      // most current vintage's numbers underneath it
+      if(it.flagStatus==='low' && it._vintageYear!==null){
+        const group = groupMap[it._baseName];
+        if(group && group.length>1){
+          const current = group.reduce((a,b)=> (b._vintageYear>a._vintageYear ? b : a));
+          if(current !== it){
+            const subTr = document.createElement('tr');
+            subTr.style.background = 'rgba(255,255,255,0.02)';
+            const currentLabel = sec.cols[0]==='brand'
+              ? `${current.brand} — ${current.product}`
+              : current.description;
+            let subHtml = `<td class="name"><span style="color:var(--text-dim);font-size:11.5px;">↳ current vintage (${current._vintageYear}): ${currentLabel}</span></td>`;
+            sec.numCols.forEach(nc => {
+              subHtml += `<td>${fmtNum(current[nc.k])}</td>`;
+            });
+            const [subPillClass, subPillLabel] = pillMap[current.flagStatus] || ['ok','OK'];
+            subHtml += `<td><span class="pill ${subPillClass}">${subPillLabel}</span></td>`;
+            subTr.innerHTML = subHtml;
+            tbody.appendChild(subTr);
+          }
+        }
+      }
     });
     table.appendChild(tbody);
     secEl.appendChild(table);
@@ -921,20 +993,34 @@ function generatePDF(){
   const sections = [
     { key:'rndc', label:'RNDC', build: it => [
         `${it.brand} — ${it.product}`,
-        `On Hand ${it.onHand} · On Order ${it.onOrder} · ${it.coverageWeeks!==null ? it.coverageWeeks.toFixed(1)+' wks coverage' : 'n/a'}`
+        `On Hand ${fmtNum(it.onHand)} · On Order ${fmtNum(it.onOrder)} · ${it.coverageWeeks!==null ? fmtNum(it.coverageWeeks)+' wks coverage' : 'n/a'}`
       ]},
     { key:'alliance', label:'Alliance', build: it => [
         it.description,
-        `On Hand ${it.onHand} · On Order ${it.onOrder} · Next Receipt ${it.nextReceipt || 'none scheduled'}${it.daysOut!==null ? ' ('+it.daysOut+' days out)' : ''}`
+        `On Hand ${fmtNum(it.onHand)} · On Order ${fmtNum(it.onOrder)} · Next Receipt ${it.nextReceipt || 'none scheduled'}${it.daysOut!==null ? ' ('+it.daysOut+' days out)' : ''}`
       ]},
     { key:'vintage', label:'Vintage', build: it => [
         it.description,
-        `Ending Inv ${it.endingInv} · ${it.coverageWeeks!==null ? it.coverageWeeks.toFixed(1)+' wks coverage' : 'n/a'} · sales pace ${it.weeklyRate.toFixed(1)}/wk`
+        `Ending Inv ${fmtNum(it.endingInv)} · ${it.coverageWeeks!==null ? fmtNum(it.coverageWeeks)+' wks coverage' : 'n/a'} · sales pace ${fmtNum(it.weeklyRate)}/wk`
       ]}
   ];
 
   sections.forEach(sec => {
-    const flagged = (state[sec.key].items || []).filter(it => it.flagStatus === 'low' && !isItemExcluded(it));
+    const allItems = (state[sec.key].items || []).filter(it => !isItemExcluded(it));
+    const flagged = allItems.filter(it => it.flagStatus === 'low');
+
+    // build vintage groups across ALL tracked items in this section (not just flagged),
+    // so a low item can point to a current vintage that itself isn't flagged
+    const groupMap = {};
+    allItems.forEach(it => {
+      const { text } = itemSearchText(it);
+      it._vintageYear = extractVintageYear(text);
+      it._baseName = baseNameNoVintage(text);
+      if(it._vintageYear !== null){
+        if(!groupMap[it._baseName]) groupMap[it._baseName] = [];
+        groupMap[it._baseName].push(it);
+      }
+    });
 
     if(y > 700){ doc.addPage(); y = 50; }
     doc.setFont('helvetica','bold');
@@ -968,6 +1054,29 @@ function generatePDF(){
       doc.text(line2, marginX, y);
       doc.setTextColor(0);
       y += 18;
+
+      // current-vintage sub-line, only when this base product spans multiple vintage years
+      if(it._vintageYear !== null){
+        const group = groupMap[it._baseName];
+        if(group && group.length > 1){
+          const current = group.reduce((a,b) => (b._vintageYear > a._vintageYear ? b : a));
+          if(current !== it){
+            const [curLine1, curLine2] = sec.build(current);
+            const statusWord = current.flagStatus === 'ok' ? 'GREEN — OK'
+              : current.flagStatus === 'low' ? 'RED — LOW'
+              : current.flagStatus.toUpperCase();
+            if(y > 730){ doc.addPage(); y = 50; }
+            doc.setFont('helvetica','italic');
+            doc.setFontSize(9);
+            doc.setTextColor(110);
+            doc.text(`   current vintage (${current._vintageYear}) — ${statusWord}: ${curLine1}`, marginX, y);
+            y += 12;
+            doc.text(`   ${curLine2}`, marginX, y);
+            doc.setTextColor(0);
+            y += 16;
+          }
+        }
+      }
     });
     y += 10;
   });
