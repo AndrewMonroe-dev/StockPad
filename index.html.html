@@ -1,0 +1,840 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>StockPad — Distributor Inventory Tracker</title>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js"></script>
+<style>
+  :root{
+    --bg:#0A0B0F;
+    --panel:#12141B;
+    --panel2:#181B24;
+    --border:#252938;
+    --text:#E6E8EF;
+    --text-dim:#8A8FA3;
+    --accent:#3B82F6;
+    --good:#22C55E;
+    --warn:#F59E0B;
+    --bad:#EF4444;
+    --mono:'SF Mono',ui-monospace,'Cascadia Code',Consolas,monospace;
+  }
+  *{box-sizing:border-box;}
+  body{
+    margin:0;
+    background:var(--bg);
+    color:var(--text);
+    font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;
+    -webkit-font-smoothing:antialiased;
+    padding-bottom:80px;
+  }
+  header{
+    padding:28px 32px 20px;
+    border-bottom:1px solid var(--border);
+    display:flex;
+    justify-content:space-between;
+    align-items:flex-end;
+    flex-wrap:wrap;
+    gap:12px;
+  }
+  header h1{
+    margin:0;
+    font-size:22px;
+    letter-spacing:-0.02em;
+    font-weight:650;
+  }
+  header h1 span{color:var(--accent);}
+  header p{margin:4px 0 0;color:var(--text-dim);font-size:13px;}
+  .hdr-actions{display:flex;gap:8px;}
+  main{max-width:1180px;margin:0 auto;padding:24px 32px;}
+  .grid3{
+    display:grid;
+    grid-template-columns:repeat(3,1fr);
+    gap:16px;
+    margin-bottom:28px;
+  }
+  @media (max-width:900px){.grid3{grid-template-columns:1fr;}}
+  .dist-card{
+    background:var(--panel);
+    border:1px solid var(--border);
+    border-radius:10px;
+    padding:18px;
+    display:flex;
+    flex-direction:column;
+    gap:10px;
+  }
+  .dist-card h2{
+    margin:0;
+    font-size:14px;
+    text-transform:uppercase;
+    letter-spacing:.06em;
+    color:var(--text-dim);
+    display:flex;
+    justify-content:space-between;
+    align-items:center;
+  }
+  .dist-card h2 .count{
+    font-family:var(--mono);
+    font-size:12px;
+    background:var(--panel2);
+    padding:2px 8px;
+    border-radius:20px;
+    color:var(--text);
+  }
+  .dropzone{
+    border:1.5px dashed var(--border);
+    border-radius:8px;
+    padding:22px 10px;
+    text-align:center;
+    color:var(--text-dim);
+    font-size:12.5px;
+    cursor:pointer;
+    transition:border-color .15s,background .15s;
+  }
+  .dropzone:hover, .dropzone.drag{
+    border-color:var(--accent);
+    background:rgba(59,130,246,0.06);
+  }
+  .dropzone input{display:none;}
+  .filename{font-size:12px;color:var(--good);margin-top:6px;word-break:break-all;}
+  .threshold-row{display:flex;align-items:center;gap:8px;font-size:12px;color:var(--text-dim);}
+  .threshold-row input{
+    width:56px;
+    background:var(--panel2);
+    border:1px solid var(--border);
+    color:var(--text);
+    border-radius:6px;
+    padding:4px 6px;
+    font-family:var(--mono);
+    font-size:12px;
+  }
+  .status-line{font-size:11.5px;color:var(--text-dim);font-family:var(--mono);min-height:14px;}
+  section.results{
+    background:var(--panel);
+    border:1px solid var(--border);
+    border-radius:10px;
+    margin-bottom:20px;
+    overflow:hidden;
+  }
+  section.results > .sec-head{
+    padding:14px 18px;
+    border-bottom:1px solid var(--border);
+    display:flex;
+    justify-content:space-between;
+    align-items:center;
+  }
+  section.results > .sec-head h3{margin:0;font-size:14px;font-weight:600;}
+  section.results > .sec-head .tag{
+    font-family:var(--mono);
+    font-size:11px;
+    color:var(--text-dim);
+  }
+  table{width:100%;border-collapse:collapse;font-size:12.5px;}
+  thead th{
+    text-align:left;
+    padding:8px 14px;
+    color:var(--text-dim);
+    font-weight:500;
+    font-size:11px;
+    text-transform:uppercase;
+    letter-spacing:.04em;
+    border-bottom:1px solid var(--border);
+  }
+  tbody td{
+    padding:8px 14px;
+    border-bottom:1px solid rgba(255,255,255,0.03);
+    font-family:var(--mono);
+    font-size:12px;
+  }
+  tbody td.name{font-family:inherit;font-size:12.5px;}
+  tbody tr.flag td{background:rgba(239,68,68,0.07);}
+  .pill{
+    display:inline-block;
+    padding:2px 8px;
+    border-radius:20px;
+    font-size:10.5px;
+    font-weight:600;
+    font-family:var(--mono);
+  }
+  .pill.low{background:rgba(239,68,68,0.15);color:var(--bad);}
+  .pill.ok{background:rgba(34,197,94,0.12);color:var(--good);}
+  .pill.dead{background:rgba(138,143,163,0.15);color:var(--text-dim);}
+  button{
+    background:var(--panel2);
+    border:1px solid var(--border);
+    color:var(--text);
+    padding:8px 14px;
+    border-radius:7px;
+    font-size:12.5px;
+    cursor:pointer;
+    font-weight:500;
+  }
+  button:hover{border-color:var(--accent);}
+  button.primary{background:var(--accent);border-color:var(--accent);color:#fff;}
+  button.primary:hover{background:#2f6fd8;}
+  button.ghost{background:transparent;}
+  button:disabled{opacity:.4;cursor:not-allowed;}
+  .mapping-panel{
+    background:var(--panel);
+    border:1px solid var(--border);
+    border-radius:10px;
+    padding:18px;
+    margin-bottom:20px;
+  }
+  .mapping-panel h3{margin:0 0 4px;font-size:14px;}
+  .mapping-panel p{margin:0 0 14px;color:var(--text-dim);font-size:12px;}
+  .map-row{
+    display:grid;
+    grid-template-columns:1.4fr 1fr 1fr 1fr auto;
+    gap:8px;
+    margin-bottom:8px;
+  }
+  .map-row input{
+    background:var(--panel2);
+    border:1px solid var(--border);
+    color:var(--text);
+    border-radius:6px;
+    padding:6px 9px;
+    font-size:12px;
+  }
+  .empty-note{padding:24px;text-align:center;color:var(--text-dim);font-size:12.5px;}
+  footer.bar{
+    position:fixed;
+    bottom:0;left:0;right:0;
+    background:var(--panel);
+    border-top:1px solid var(--border);
+    padding:14px 32px;
+    display:flex;
+    justify-content:space-between;
+    align-items:center;
+  }
+  footer.bar .summary{font-family:var(--mono);font-size:12px;color:var(--text-dim);}
+  footer.bar .summary b{color:var(--bad);}
+  .actions{display:flex;gap:8px;}
+</style>
+</head>
+<body>
+
+<header>
+  <div>
+    <h1>Stock<span>Pad</span></h1>
+    <p>Distributor inventory tracker — flags SKUs running low relative to sales pace</p>
+  </div>
+  <div class="hdr-actions">
+    <button class="ghost" onclick="exportBackup()">Export backup</button>
+    <button class="ghost" onclick="document.getElementById('importFile').click()">Import backup</button>
+    <input type="file" id="importFile" accept="application/json" style="display:none" onchange="importBackup(event)">
+  </div>
+</header>
+
+<main>
+
+  <div class="grid3">
+
+    <div class="dist-card">
+      <h2>RNDC <span class="count" id="rndc-count">0 items</span></h2>
+      <div class="dropzone" id="rndc-drop" onclick="document.getElementById('rndc-file').click()">
+        Drop RNDC .xlsx here<br>or click to browse
+        <input type="file" id="rndc-file" accept=".xlsx,.xls">
+      </div>
+      <div class="filename" id="rndc-filename"></div>
+      <div class="threshold-row">Coverage flag under <input type="number" id="rndc-weeks" value="2" step="0.5"> weeks</div>
+      <div class="status-line" id="rndc-status"></div>
+    </div>
+
+    <div class="dist-card">
+      <h2>Alliance <span class="count" id="alliance-count">0 items</span></h2>
+      <div class="dropzone" id="alliance-drop" onclick="document.getElementById('alliance-file').click()">
+        Drop Alliance .pdf here<br>or click to browse
+        <input type="file" id="alliance-file" accept=".pdf">
+      </div>
+      <div class="filename" id="alliance-filename"></div>
+      <div class="threshold-row">On Hand flag under <input type="number" id="alliance-onhand" value="5" step="0.5"> cases</div>
+      <div class="threshold-row">Next Receipt flag over <input type="number" id="alliance-days" value="14" step="1"> days out</div>
+      <div class="status-line" id="alliance-status"></div>
+    </div>
+
+    <div class="dist-card">
+      <h2>Vintage <span class="count" id="vintage-count">0 items</span></h2>
+      <div class="dropzone" id="vintage-drop" onclick="document.getElementById('vintage-file').click()">
+        Drop Vintage .pdf here<br>or click to browse
+        <input type="file" id="vintage-file" accept=".pdf">
+      </div>
+      <div class="filename" id="vintage-filename"></div>
+      <div class="threshold-row">Coverage flag under <input type="number" id="vintage-weeks" value="2" step="0.5"> weeks</div>
+      <div class="status-line" id="vintage-status"></div>
+    </div>
+
+  </div>
+
+  <div class="mapping-panel">
+    <h3>Cross-distributor mapping</h3>
+    <p>Optional. Map the same brand/SKU across distributors so it's easy to spot when one distributor is low but another isn't. New SKUs can be added any time — unmapped items are still tracked and flagged individually.</p>
+    <div id="map-rows"></div>
+    <button class="ghost" onclick="addMappingRow()">+ Add mapping</button>
+  </div>
+
+  <div id="results-container">
+    <div class="empty-note">Upload files above to see parsed results and flags.</div>
+  </div>
+
+</main>
+
+<footer class="bar">
+  <div class="summary">
+    <span id="total-flagged">0</span> items flagged low across <span id="total-items">0</span> tracked &nbsp;|&nbsp;
+    Last saved snapshot: <span id="last-snapshot">none</span>
+  </div>
+  <div class="actions">
+    <button onclick="saveSnapshot()">Save snapshot</button>
+    <button class="primary" onclick="generatePDF()">Generate flagged-items PDF</button>
+  </div>
+</footer>
+
+<script>
+/* ============================================================
+   STOCKPAD — state
+   ============================================================ */
+const state = {
+  rndc: { items: [], filename: '' },
+  alliance: { items: [], filename: '' },
+  vintage: { items: [], filename: '', dateRangeDays: 14 },
+  mappings: []
+};
+
+const LS_KEY = 'stockpad_data_v1';
+const LS_MAP_KEY = 'stockpad_mappings_v1';
+const LS_SNAPSHOTS_KEY = 'stockpad_snapshots_v1';
+
+function loadLocal(){
+  try{
+    const raw = localStorage.getItem(LS_MAP_KEY);
+    if(raw) state.mappings = JSON.parse(raw);
+  }catch(e){ console.warn('mapping load failed', e); }
+  renderMappings();
+  const last = localStorage.getItem('stockpad_last_snapshot_date');
+  if(last) document.getElementById('last-snapshot').textContent = last;
+}
+
+function saveMappings(){
+  localStorage.setItem(LS_MAP_KEY, JSON.stringify(state.mappings));
+}
+
+/* ============================================================
+   FILE WIRING
+   ============================================================ */
+function wireDropzone(id, fileInputId, handler){
+  const zone = document.getElementById(id);
+  const input = document.getElementById(fileInputId);
+  input.addEventListener('change', e => { if(e.target.files[0]) handler(e.target.files[0]); });
+  zone.addEventListener('dragover', e => { e.preventDefault(); zone.classList.add('drag'); });
+  zone.addEventListener('dragleave', () => zone.classList.remove('drag'));
+  zone.addEventListener('drop', e => {
+    e.preventDefault();
+    zone.classList.remove('drag');
+    if(e.dataTransfer.files[0]) handler(e.dataTransfer.files[0]);
+  });
+}
+
+wireDropzone('rndc-drop','rndc-file', handleRNDC);
+wireDropzone('alliance-drop','alliance-file', handleAlliance);
+wireDropzone('vintage-drop','vintage-file', handleVintage);
+
+/* ============================================================
+   RNDC — Excel parsing (SheetJS)
+   ============================================================ */
+async function handleRNDC(file){
+  document.getElementById('rndc-filename').textContent = file.name;
+  document.getElementById('rndc-status').textContent = 'Parsing...';
+  try{
+    const buf = await file.arrayBuffer();
+    const wb = XLSX.read(buf, { type:'array' });
+    const ws = wb.Sheets[wb.SheetNames[0]];
+    const rows = XLSX.utils.sheet_to_json(ws, { header:1, raw:true, defval:null });
+
+    // find header row (col E / idx4 contains 'Metrics')
+    let headerIdx = -1, monthLabel = null;
+    for(let i=0;i<rows.length;i++){
+      const r = rows[i];
+      if(r && typeof r[4] === 'string' && r[4].toLowerCase().includes('metric')){
+        headerIdx = i;
+      }
+      if(r && typeof r[5] === 'string' && /^[A-Za-z]{3}-\d{4}$/.test(r[5])){
+        monthLabel = r[5];
+      }
+    }
+    if(headerIdx === -1) throw new Error('Could not locate header row (expected a "Metrics" label)');
+
+    const weeksElapsed = estimateWeeksElapsed(monthLabel);
+
+    const items = [];
+    for(let i=headerIdx+1;i<rows.length;i++){
+      const r = rows[i];
+      if(!r) continue;
+      const brand = r[0], product = r[1];
+      if(!brand && !product) continue;
+      const onHand = numOr0(r[5]);
+      const onOrder = numOr0(r[6]);
+      const supplierCases = numOr0(r[7]);
+      const supplierCasesLY = numOr0(r[8]);
+      const ytd = numOr0(r[9]);
+      const ytdLY = numOr0(r[10]);
+      if(onHand===0 && onOrder===0 && supplierCases===0 && ytd===0) continue; // blank trailing rows
+      items.push({ brand: String(brand||'').trim(), product: String(product||'').trim(),
+        onHand, onOrder, supplierCases, supplierCasesLY, ytd, ytdLY });
+    }
+
+    const weeklyRateOf = it => weeksElapsed > 0 ? it.ytd / weeksElapsed : 0;
+    const thresholdWeeks = parseFloat(document.getElementById('rndc-weeks').value) || 2;
+    items.forEach(it => {
+      const rate = weeklyRateOf(it);
+      it.weeklyRate = rate;
+      if(rate <= 0){
+        it.flagStatus = 'dead'; it.coverageWeeks = null;
+      } else {
+        const coverage = (it.onHand + it.onOrder) / rate;
+        it.coverageWeeks = coverage;
+        it.flagStatus = coverage < thresholdWeeks ? 'low' : 'ok';
+      }
+    });
+
+    state.rndc.items = items;
+    state.rndc.filename = file.name;
+    document.getElementById('rndc-status').textContent =
+      `Parsed ${items.length} items · ${monthLabel||'month unknown'} · ${weeksElapsed.toFixed(1)} wks elapsed`;
+    document.getElementById('rndc-count').textContent = items.length + ' items';
+    renderAll();
+  }catch(err){
+    document.getElementById('rndc-status').textContent = 'Error: ' + err.message;
+    console.error(err);
+  }
+}
+
+function estimateWeeksElapsed(monthLabel){
+  // monthLabel like "Jun-2026" -> weeks elapsed from Jan 1 through END of that month
+  if(!monthLabel) return 26; // fallback: assume mid-year
+  const months = {jan:0,feb:1,mar:2,apr:3,may:4,jun:5,jul:6,aug:7,sep:8,oct:9,nov:10,dec:11};
+  const parts = monthLabel.split('-');
+  const m = months[parts[0].toLowerCase()];
+  const y = parseInt(parts[1],10);
+  if(m===undefined || isNaN(y)) return 26;
+  const endOfMonth = new Date(y, m+1, 0);
+  const jan1 = new Date(y,0,1);
+  const days = (endOfMonth - jan1) / 86400000;
+  return Math.max(days/7, 1);
+}
+
+function numOr0(v){
+  if(v===null||v===undefined||v==='') return 0;
+  const n = parseFloat(v);
+  return isNaN(n) ? 0 : n;
+}
+
+/* ============================================================
+   ALLIANCE — PDF parsing (pdf.js), regex line matching
+   ============================================================ */
+pdfjsLib.GlobalWorkerOptions.workerSrc = 'https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.worker.min.js';
+
+async function extractPdfLines(file){
+  const buf = await file.arrayBuffer();
+  const doc = await pdfjsLib.getDocument({ data: buf }).promise;
+  let lines = [];
+  for(let p=1; p<=doc.numPages; p++){
+    const page = await doc.getPage(p);
+    const content = await page.getTextContent();
+    // group text items into lines by their Y position
+    const rows = {};
+    content.items.forEach(it => {
+      const y = Math.round(it.transform[5]);
+      if(!rows[y]) rows[y] = [];
+      rows[y].push(it);
+    });
+    const ys = Object.keys(rows).map(Number).sort((a,b)=>b-a);
+    ys.forEach(y => {
+      const lineItems = rows[y].sort((a,b)=>a.transform[4]-b.transform[4]);
+      lines.push(lineItems.map(it=>it.str).join(' ').replace(/\s+/g,' ').trim());
+    });
+  }
+  return lines.filter(l => l.length>0);
+}
+
+async function handleAlliance(file){
+  document.getElementById('alliance-filename').textContent = file.name;
+  document.getElementById('alliance-status').textContent = 'Parsing...';
+  try{
+    const lines = await extractPdfLines(file);
+    const pat = /^(\d{3,6})\s+(.+?)\s+([\d.]+)(?:\s+(\d+)\s+(\d{1,2}\/\d{1,2}\/\d{4}))?$/;
+    const items = [];
+    lines.forEach(ln => {
+      const m = pat.exec(ln);
+      if(!m) return;
+      const [, code, desc, onHandStr, onOrderStr, nextReceipt] = m;
+      items.push({
+        code, description: desc.trim(),
+        onHand: parseFloat(onHandStr)||0,
+        onOrder: onOrderStr ? parseInt(onOrderStr,10) : 0,
+        nextReceipt: nextReceipt || null
+      });
+    });
+
+    const onHandCutoff = parseFloat(document.getElementById('alliance-onhand').value) || 5;
+    const daysCutoff = parseFloat(document.getElementById('alliance-days').value) || 14;
+    const today = new Date();
+
+    items.forEach(it => {
+      let daysOut = null;
+      if(it.nextReceipt){
+        const d = new Date(it.nextReceipt);
+        daysOut = Math.round((d - today)/86400000);
+      }
+      it.daysOut = daysOut;
+      const lowOnHand = it.onHand < onHandCutoff;
+      const noOrCoverage = (daysOut === null) || (daysOut > daysCutoff);
+      it.flagStatus = (lowOnHand && noOrCoverage) ? 'low' : 'ok';
+    });
+
+    state.alliance.items = items;
+    state.alliance.filename = file.name;
+    document.getElementById('alliance-status').textContent = `Parsed ${items.length} items`;
+    document.getElementById('alliance-count').textContent = items.length + ' items';
+    renderAll();
+  }catch(err){
+    document.getElementById('alliance-status').textContent = 'Error: ' + err.message;
+    console.error(err);
+  }
+}
+
+/* ============================================================
+   VINTAGE — PDF parsing (pdf.js), tokenize-from-end
+   ============================================================ */
+async function handleVintage(file){
+  document.getElementById('vintage-filename').textContent = file.name;
+  document.getElementById('vintage-status').textContent = 'Parsing...';
+  try{
+    const lines = await extractPdfLines(file);
+    const skipStarts = ['sub-total','grand total','date range','provided by','depletions',
+      'vintage wine','roseville','(ph)','(fx)','case','beginning'];
+
+    let periodDays = 14;
+    const dateRangeLine = lines.find(l => l.toLowerCase().startsWith('date range'));
+    if(dateRangeLine){
+      const m = /(\d{1,2}\/\d{1,2}\/\d{4})\s+to\s+(\d{1,2}\/\d{1,2}\/\d{4})/i.exec(dateRangeLine);
+      if(m){
+        const d1 = new Date(m[1]), d2 = new Date(m[2]);
+        periodDays = Math.max((d2-d1)/86400000, 1);
+      }
+    }
+    state.vintage.dateRangeDays = periodDays;
+
+    const items = [];
+    lines.forEach(ln => {
+      const s = ln.trim();
+      const low = s.toLowerCase();
+      if(!s || skipStarts.some(k => low.startsWith(k))) return;
+      const toks = s.split(' ');
+      if(toks.length < 8) return;
+      const tail = toks.slice(-6);
+      if(!tail.every(t => !isNaN(parseFloat(t)) && /^[\d.]+$/.test(t))) return;
+      const caseTok = toks[toks.length-7];
+      if(!/^\d+$/.test(caseTok)) return;
+      const desc = toks.slice(0, toks.length-7).join(' ');
+      const [beg, rec, wo, sales, wosales, end] = tail.map(parseFloat);
+      items.push({
+        description: desc, caseCount: parseInt(caseTok,10),
+        beginningInv: beg, receipts: rec, writeOff: wo,
+        sales, writeOffPlusSales: wosales, endingInv: end
+      });
+    });
+
+    const thresholdWeeks = parseFloat(document.getElementById('vintage-weeks').value) || 2;
+    const periodWeeks = periodDays/7;
+    items.forEach(it => {
+      const weeklyRate = periodWeeks>0 ? it.sales/periodWeeks : 0;
+      it.weeklyRate = weeklyRate;
+      if(weeklyRate <= 0){
+        it.flagStatus = 'dead'; it.coverageWeeks = null;
+      } else {
+        const coverage = it.endingInv / weeklyRate;
+        it.coverageWeeks = coverage;
+        it.flagStatus = coverage < thresholdWeeks ? 'low' : 'ok';
+      }
+    });
+
+    state.vintage.items = items;
+    state.vintage.filename = file.name;
+    document.getElementById('vintage-status').textContent =
+      `Parsed ${items.length} items · ${periodDays.toFixed(0)}-day period`;
+    document.getElementById('vintage-count').textContent = items.length + ' items';
+    renderAll();
+  }catch(err){
+    document.getElementById('vintage-status').textContent = 'Error: ' + err.message;
+    console.error(err);
+  }
+}
+
+/* ============================================================
+   MAPPING UI
+   ============================================================ */
+function renderMappings(){
+  const container = document.getElementById('map-rows');
+  container.innerHTML = '';
+  state.mappings.forEach((m, idx) => {
+    const row = document.createElement('div');
+    row.className = 'map-row';
+    row.innerHTML = `
+      <input placeholder="Master item name" value="${escAttr(m.masterName||'')}" onchange="updateMapping(${idx},'masterName',this.value)">
+      <input placeholder="RNDC match text" value="${escAttr(m.rndcMatch||'')}" onchange="updateMapping(${idx},'rndcMatch',this.value)">
+      <input placeholder="Alliance match text" value="${escAttr(m.allianceMatch||'')}" onchange="updateMapping(${idx},'allianceMatch',this.value)">
+      <input placeholder="Vintage match text" value="${escAttr(m.vintageMatch||'')}" onchange="updateMapping(${idx},'vintageMatch',this.value)">
+      <button class="ghost" onclick="removeMapping(${idx})">✕</button>
+    `;
+    container.appendChild(row);
+  });
+}
+function addMappingRow(){
+  state.mappings.push({ masterName:'', rndcMatch:'', allianceMatch:'', vintageMatch:'' });
+  saveMappings(); renderMappings();
+}
+function updateMapping(idx, field, value){
+  state.mappings[idx][field] = value;
+  saveMappings();
+}
+function removeMapping(idx){
+  state.mappings.splice(idx,1);
+  saveMappings(); renderMappings();
+}
+function escAttr(s){ return String(s).replace(/"/g,'&quot;'); }
+
+/* ============================================================
+   RENDER RESULTS
+   ============================================================ */
+function renderAll(){
+  const container = document.getElementById('results-container');
+  container.innerHTML = '';
+
+  const sections = [
+    { key:'rndc', label:'RNDC', cols:['brand','product'], numCols:[
+        {k:'onHand',l:'On Hand'},{k:'onOrder',l:'On Order'},{k:'weeklyRate',l:'Wkly Rate',fmt:1},
+        {k:'coverageWeeks',l:'Wks Cover',fmt:1}] },
+    { key:'alliance', label:'Alliance', cols:['description'], numCols:[
+        {k:'onHand',l:'On Hand'},{k:'onOrder',l:'On Order'},{k:'daysOut',l:'Days to Next Recv'}] },
+    { key:'vintage', label:'Vintage', cols:['description'], numCols:[
+        {k:'endingInv',l:'Ending Inv'},{k:'weeklyRate',l:'Wkly Rate',fmt:1},
+        {k:'coverageWeeks',l:'Wks Cover',fmt:1}] }
+  ];
+
+  let totalFlagged = 0, totalItems = 0;
+
+  sections.forEach(sec => {
+    const data = state[sec.key].items;
+    if(!data.length) return;
+    totalItems += data.length;
+    const flaggedCount = data.filter(d=>d.flagStatus==='low').length;
+    totalFlagged += flaggedCount;
+
+    const secEl = document.createElement('section');
+    secEl.className = 'results';
+    const head = document.createElement('div');
+    head.className = 'sec-head';
+    head.innerHTML = `<h3>${sec.label}</h3><span class="tag">${flaggedCount} low / ${data.length} total</span>`;
+    secEl.appendChild(head);
+
+    const table = document.createElement('table');
+    const nameLabel = sec.cols[0]==='brand' ? 'Brand / Product' : 'Item';
+    let thead = `<thead><tr><th>${nameLabel}</th>`;
+    sec.numCols.forEach(nc => thead += `<th>${nc.l}</th>`);
+    thead += `<th>Status</th></tr></thead>`;
+    table.innerHTML = thead;
+
+    const tbody = document.createElement('tbody');
+    // sort: low first, then dead, then ok
+    const order = {low:0, dead:1, ok:2};
+    [...data].sort((a,b)=>(order[a.flagStatus]??3)-(order[b.flagStatus]??3)).forEach(it => {
+      const tr = document.createElement('tr');
+      if(it.flagStatus==='low') tr.className='flag';
+      let nameCell = sec.cols[0]==='brand' ? `<b>${it.brand}</b><br><span style="color:var(--text-dim)">${it.product}</span>` : it.description;
+      let rowHtml = `<td class="name">${nameCell}</td>`;
+      sec.numCols.forEach(nc => {
+        let v = it[nc.k];
+        if(v===null||v===undefined) rowHtml += `<td>—</td>`;
+        else rowHtml += `<td>${nc.fmt ? Number(v).toFixed(nc.fmt) : v}</td>`;
+      });
+      const pillClass = it.flagStatus==='low' ? 'low' : (it.flagStatus==='dead' ? 'dead' : 'ok');
+      const pillLabel = it.flagStatus==='low' ? 'LOW' : (it.flagStatus==='dead' ? 'NO SALES' : 'OK');
+      rowHtml += `<td><span class="pill ${pillClass}">${pillLabel}</span></td>`;
+      tr.innerHTML = rowHtml;
+      tbody.appendChild(tr);
+    });
+    table.appendChild(tbody);
+    secEl.appendChild(table);
+    container.appendChild(secEl);
+  });
+
+  if(container.children.length===0){
+    container.innerHTML = '<div class="empty-note">Upload files above to see parsed results and flags.</div>';
+  }
+
+  document.getElementById('total-flagged').textContent = totalFlagged;
+  document.getElementById('total-items').textContent = totalItems;
+}
+
+/* ============================================================
+   SNAPSHOT STORAGE (localStorage)
+   ============================================================ */
+function saveSnapshot(){
+  const stamp = new Date().toISOString();
+  let snaps = [];
+  try{ snaps = JSON.parse(localStorage.getItem(LS_SNAPSHOTS_KEY)) || []; }catch(e){}
+  snaps.push({
+    date: stamp,
+    rndc: { filename: state.rndc.filename, items: state.rndc.items },
+    alliance: { filename: state.alliance.filename, items: state.alliance.items },
+    vintage: { filename: state.vintage.filename, items: state.vintage.items }
+  });
+  // keep last 60 snapshots to bound storage size
+  if(snaps.length > 60) snaps = snaps.slice(snaps.length-60);
+  try{
+    localStorage.setItem(LS_SNAPSHOTS_KEY, JSON.stringify(snaps));
+    localStorage.setItem('stockpad_last_snapshot_date', stamp);
+    document.getElementById('last-snapshot').textContent = stamp;
+    alert('Snapshot saved locally (' + snaps.length + ' total saved).');
+  }catch(e){
+    alert('Could not save snapshot — local storage may be full. Try exporting a backup and clearing old snapshots.');
+  }
+}
+
+function exportBackup(){
+  let snaps = [];
+  try{ snaps = JSON.parse(localStorage.getItem(LS_SNAPSHOTS_KEY)) || []; }catch(e){}
+  const payload = {
+    exportedAt: new Date().toISOString(),
+    mappings: state.mappings,
+    snapshots: snaps,
+    current: {
+      rndc: state.rndc, alliance: state.alliance, vintage: state.vintage
+    }
+  };
+  const blob = new Blob([JSON.stringify(payload,null,2)], {type:'application/json'});
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = `stockpad-backup-${new Date().toISOString().slice(0,10)}.json`;
+  a.click();
+  URL.revokeObjectURL(url);
+}
+
+function importBackup(evt){
+  const file = evt.target.files[0];
+  if(!file) return;
+  const reader = new FileReader();
+  reader.onload = e => {
+    try{
+      const payload = JSON.parse(e.target.result);
+      if(payload.mappings) { state.mappings = payload.mappings; saveMappings(); renderMappings(); }
+      if(payload.snapshots) localStorage.setItem(LS_SNAPSHOTS_KEY, JSON.stringify(payload.snapshots));
+      if(payload.current){
+        if(payload.current.rndc) state.rndc = payload.current.rndc;
+        if(payload.current.alliance) state.alliance = payload.current.alliance;
+        if(payload.current.vintage) state.vintage = payload.current.vintage;
+        document.getElementById('rndc-filename').textContent = state.rndc.filename||'';
+        document.getElementById('alliance-filename').textContent = state.alliance.filename||'';
+        document.getElementById('vintage-filename').textContent = state.vintage.filename||'';
+        document.getElementById('rndc-count').textContent = (state.rndc.items.length||0)+' items';
+        document.getElementById('alliance-count').textContent = (state.alliance.items.length||0)+' items';
+        document.getElementById('vintage-count').textContent = (state.vintage.items.length||0)+' items';
+      }
+      renderAll();
+      alert('Backup imported.');
+    }catch(err){
+      alert('Import failed: ' + err.message);
+    }
+  };
+  reader.readAsText(file);
+}
+
+/* ============================================================
+   PDF EXPORT — flagged items only, 3 sections
+   ============================================================ */
+function generatePDF(){
+  const { jsPDF } = window.jspdf;
+  const doc = new jsPDF({ unit:'pt', format:'letter' });
+  const marginX = 40;
+  let y = 50;
+
+  doc.setFont('helvetica','bold');
+  doc.setFontSize(16);
+  doc.text('StockPad — Low Inventory Flags', marginX, y);
+  doc.setFont('helvetica','normal');
+  doc.setFontSize(9);
+  doc.setTextColor(110);
+  y += 16;
+  doc.text('Generated ' + new Date().toLocaleString(), marginX, y);
+  doc.setTextColor(0);
+  y += 26;
+
+  const sections = [
+    { key:'rndc', label:'RNDC', build: it => [
+        `${it.brand} — ${it.product}`,
+        `On Hand ${it.onHand} · On Order ${it.onOrder} · ${it.coverageWeeks!==null ? it.coverageWeeks.toFixed(1)+' wks coverage' : 'n/a'}`
+      ]},
+    { key:'alliance', label:'Alliance', build: it => [
+        it.description,
+        `On Hand ${it.onHand} · On Order ${it.onOrder} · Next Receipt ${it.nextReceipt || 'none scheduled'}${it.daysOut!==null ? ' ('+it.daysOut+' days out)' : ''}`
+      ]},
+    { key:'vintage', label:'Vintage', build: it => [
+        it.description,
+        `Ending Inv ${it.endingInv} · ${it.coverageWeeks!==null ? it.coverageWeeks.toFixed(1)+' wks coverage' : 'n/a'} · sales pace ${it.weeklyRate.toFixed(1)}/wk`
+      ]}
+  ];
+
+  sections.forEach(sec => {
+    const flagged = (state[sec.key].items || []).filter(it => it.flagStatus === 'low');
+
+    if(y > 700){ doc.addPage(); y = 50; }
+    doc.setFont('helvetica','bold');
+    doc.setFontSize(13);
+    doc.text(sec.label, marginX, y);
+    y += 6;
+    doc.setDrawColor(200);
+    doc.line(marginX, y, 572, y);
+    y += 16;
+
+    if(flagged.length === 0){
+      doc.setFont('helvetica','italic');
+      doc.setFontSize(10);
+      doc.setTextColor(120);
+      doc.text('No low-inventory items flagged.', marginX, y);
+      doc.setTextColor(0);
+      y += 22;
+      return;
+    }
+
+    flagged.forEach(it => {
+      const [line1, line2] = sec.build(it);
+      if(y > 730){ doc.addPage(); y = 50; }
+      doc.setFont('helvetica','bold');
+      doc.setFontSize(10.5);
+      doc.text(line1, marginX, y);
+      y += 13;
+      doc.setFont('helvetica','normal');
+      doc.setFontSize(9);
+      doc.setTextColor(90);
+      doc.text(line2, marginX, y);
+      doc.setTextColor(0);
+      y += 18;
+    });
+    y += 10;
+  });
+
+  doc.save(`stockpad-low-inventory-${new Date().toISOString().slice(0,10)}.pdf`);
+}
+
+/* ============================================================
+   INIT
+   ============================================================ */
+loadLocal();
+</script>
+</body>
+</html>
