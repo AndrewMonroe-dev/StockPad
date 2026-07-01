@@ -320,6 +320,7 @@
   </div>
   <div class="actions">
     <button onclick="saveSnapshot()">Save snapshot</button>
+    <button onclick="copyFormattedEmail()">Copy formatted</button>
     <button onclick="composeEmail()">Compose Outlook email</button>
     <button class="primary" onclick="generatePDF()">Generate flagged-items PDF</button>
   </div>
@@ -1137,6 +1138,113 @@ function generatePDF(){
 }
 
 // Same content as the PDF, but as plain text, for the email body
+/* ============================================================
+   HTML SUMMARY — same content, formatted for rich-text paste into email
+   ============================================================ */
+function escHtml(s){
+  return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
+}
+
+function buildHTMLSummary(){
+  const sections = [
+    { key:'rndc', label:'RNDC', build: it =>
+        [`${escHtml(it.brand)} — ${escHtml(it.product)}`,
+         `On Hand ${fmtNum(it.onHand)} · On Order ${fmtNum(it.onOrder)} · ${it.coverageWeeks!==null ? fmtNum(it.coverageWeeks)+' wks coverage' : 'n/a'}`] },
+    { key:'alliance', label:'Alliance', build: it =>
+        [escHtml(it.description),
+         `On Hand ${fmtNum(it.onHand)} · On Order ${fmtNum(it.onOrder)} · Next Receipt ${it.nextReceipt || 'none scheduled'}${it.daysOut!==null ? ' ('+it.daysOut+' days out)' : ''}`] },
+    { key:'vintage', label:'Vintage', build: it =>
+        [escHtml(it.description),
+         `Ending Inv ${fmtNum(it.endingInv)} · ${it.coverageWeeks!==null ? fmtNum(it.coverageWeeks)+' wks coverage' : 'n/a'} · sales pace ${fmtNum(it.weeklyRate)}/wk`] }
+  ];
+
+  const fontStack = `font-family:Calibri,Arial,sans-serif;`;
+  let html = `<div style="${fontStack}font-size:14px;color:#1a1a1a;">`;
+  html += `<h2 style="margin:0 0 4px;font-size:18px;">StockPad — Low Inventory Flags</h2>`;
+  html += `<p style="margin:0 0 18px;color:#666;font-size:12px;">Generated ${escHtml(new Date().toLocaleString())}</p>`;
+
+  sections.forEach(sec => {
+    const allItems = (state[sec.key].items || []).filter(it => !isItemExcluded(it));
+    const flagged = allItems.filter(it => it.flagStatus === 'low');
+
+    const groupMap = {};
+    allItems.forEach(it => {
+      const { text } = itemSearchText(it);
+      it._vintageYear = extractVintageYear(text);
+      it._baseName = baseNameNoVintage(text);
+      if(it._vintageYear !== null){
+        if(!groupMap[it._baseName]) groupMap[it._baseName] = [];
+        groupMap[it._baseName].push(it);
+      }
+    });
+
+    html += `<h3 style="margin:22px 0 8px;font-size:15px;border-bottom:2px solid #333;padding-bottom:4px;">${escHtml(sec.label)}</h3>`;
+
+    if(flagged.length === 0){
+      html += `<p style="color:#888;font-style:italic;margin:0 0 10px;">No low-inventory items flagged.</p>`;
+      return;
+    }
+
+    flagged.forEach(it => {
+      const [name, stats] = sec.build(it);
+      html += `<div style="margin:0 0 4px;padding:8px 10px;background:#fdeaea;border-left:4px solid #dc2626;">`;
+      html += `<div style="font-weight:bold;">${name}</div>`;
+      html += `<div style="font-size:12.5px;color:#555;">${stats}</div>`;
+      html += `</div>`;
+
+      if(it._vintageYear !== null){
+        const group = groupMap[it._baseName];
+        if(group && group.length > 1){
+          const current = group.reduce((a,b) => (b._vintageYear > a._vintageYear ? b : a));
+          if(current !== it){
+            const [curName, curStats] = sec.build(current);
+            const isOk = current.flagStatus === 'ok';
+            const isLow = current.flagStatus === 'low';
+            const bg = isOk ? '#e8f8ee' : (isLow ? '#fdeaea' : '#f0f0f0');
+            const border = isOk ? '#16a34a' : (isLow ? '#dc2626' : '#888');
+            const statusWord = isOk ? 'GREEN — OK' : isLow ? 'RED — LOW' : current.flagStatus.toUpperCase();
+            html += `<div style="margin:2px 0 10px 18px;padding:6px 10px;background:${bg};border-left:4px solid ${border};font-size:12.5px;">`;
+            html += `<div style="font-weight:bold;color:${border};">↳ current vintage (${current._vintageYear}) — ${statusWord}</div>`;
+            html += `<div>${curName}</div>`;
+            html += `<div style="color:#555;">${curStats}</div>`;
+            html += `</div>`;
+          } else {
+            html += `<div style="margin:0 0 10px;"></div>`;
+          }
+        } else {
+          html += `<div style="margin:0 0 10px;"></div>`;
+        }
+      } else {
+        html += `<div style="margin:0 0 10px;"></div>`;
+      }
+    });
+  });
+
+  html += `</div>`;
+  return html;
+}
+
+async function copyFormattedEmail(){
+  const hasAny = state.rndc.items.length || state.alliance.items.length || state.vintage.items.length;
+  if(!hasAny){
+    alert('Upload at least one distributor file first.');
+    return;
+  }
+  const html = buildHTMLSummary();
+  const plain = buildPlainTextSummary();
+  try{
+    const item = new ClipboardItem({
+      'text/html': new Blob([html], { type:'text/html' }),
+      'text/plain': new Blob([plain], { type:'text/plain' })
+    });
+    await navigator.clipboard.write([item]);
+    alert('Copied! Paste directly into an Outlook email (or any rich-text field) and the formatting — colors, bold, layout — will come with it.');
+  }catch(err){
+    console.error(err);
+    alert('Copy failed — your browser may block clipboard access outside a direct click, or may not support rich-text copy. Try clicking the button again, or use the PDF / .eml options instead.');
+  }
+}
+
 function buildPlainTextSummary(){
   const sections = [
     { key:'rndc', label:'RNDC', build: it =>
