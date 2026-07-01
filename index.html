@@ -307,6 +307,16 @@
     <div id="exclusion-chips" style="display:flex;flex-wrap:wrap;gap:8px;"></div>
   </div>
 
+  <div class="mapping-panel">
+    <h3>Recap logo</h3>
+    <p>Shown top-left and centered at the bottom of the Copy Formatted recap. Stored locally in this browser only — not baked into the app file — so re-upload once here after pasting a fresh version of index.html.</p>
+    <div style="display:flex;align-items:center;gap:10px;">
+      <button class="ghost" onclick="document.getElementById('logoFile').click()">Upload logo</button>
+      <input type="file" id="logoFile" accept="image/*" style="display:none" onchange="handleLogoUpload(event)">
+      <span id="logo-status" style="font-size:12px;color:var(--text-dim);"></span>
+    </div>
+  </div>
+
   <div id="results-container">
     <div class="empty-note">Upload files above to see parsed results and flags.</div>
   </div>
@@ -330,6 +340,8 @@
 /* ============================================================
    STOCKPAD — state
    ============================================================ */
+let STOCKPAD_LOGO_B64 = '';
+
 const state = {
   rndc: { items: [], filename: '' },
   alliance: { items: [], filename: '' },
@@ -340,6 +352,7 @@ const state = {
 
 const LS_KEY = 'stockpad_data_v1';
 const LS_MAP_KEY = 'stockpad_mappings_v1';
+const LS_LOGO_KEY = 'stockpad_logo_b64';
 const LS_EXCLUSIONS_KEY = 'stockpad_custom_exclusions_v1';
 const LS_SNAPSHOTS_KEY = 'stockpad_snapshots_v1';
 
@@ -352,8 +365,13 @@ function loadLocal(){
     const raw2 = localStorage.getItem(LS_EXCLUSIONS_KEY);
     if(raw2) state.customExclusions = JSON.parse(raw2);
   }catch(e){ console.warn('exclusion load failed', e); }
+  try{
+    const logo = localStorage.getItem(LS_LOGO_KEY);
+    if(logo) STOCKPAD_LOGO_B64 = logo;
+  }catch(e){ console.warn('logo load failed', e); }
   renderMappings();
   renderExclusions();
+  renderLogoStatus();
   const last = localStorage.getItem('stockpad_last_snapshot_date');
   if(last) document.getElementById('last-snapshot').textContent = last;
 }
@@ -735,6 +753,39 @@ function removeMapping(idx){
 function escAttr(s){ return String(s).replace(/"/g,'&quot;'); }
 
 /* ---- custom exclusion keywords ---- */
+/* ---- logo (stored locally, not baked into the file) ---- */
+function renderLogoStatus(){
+  const el = document.getElementById('logo-status');
+  if(!el) return;
+  if(STOCKPAD_LOGO_B64){
+    el.innerHTML = `<img src="data:image/png;base64,${STOCKPAD_LOGO_B64}" style="width:20px;height:20px;border-radius:3px;vertical-align:middle;margin-right:6px;"> Logo set <button class="ghost" style="padding:2px 8px;font-size:11px;margin-left:8px;" onclick="removeLogo()">Remove</button>`;
+  } else {
+    el.textContent = 'No logo set — upload one to appear in Copy Formatted recaps.';
+  }
+}
+function handleLogoUpload(evt){
+  const file = evt.target.files[0];
+  if(!file) return;
+  const reader = new FileReader();
+  reader.onload = e => {
+    const dataUri = e.target.result;
+    const b64 = dataUri.split(',')[1];
+    STOCKPAD_LOGO_B64 = b64;
+    try{
+      localStorage.setItem(LS_LOGO_KEY, b64);
+    }catch(err){
+      alert('Logo saved for this session, but local storage is full so it may not persist — try a smaller image.');
+    }
+    renderLogoStatus();
+  };
+  reader.readAsDataURL(file);
+}
+function removeLogo(){
+  STOCKPAD_LOGO_B64 = '';
+  localStorage.removeItem(LS_LOGO_KEY);
+  renderLogoStatus();
+}
+
 function saveExclusions(){
   localStorage.setItem(LS_EXCLUSIONS_KEY, JSON.stringify(state.customExclusions));
 }
@@ -970,6 +1021,7 @@ function exportBackup(){
     exportedAt: new Date().toISOString(),
     mappings: state.mappings,
     customExclusions: state.customExclusions,
+    logoBase64: STOCKPAD_LOGO_B64 || null,
     snapshots: snaps,
     current: {
       rndc: state.rndc, alliance: state.alliance, vintage: state.vintage
@@ -993,6 +1045,11 @@ function importBackup(evt){
       const payload = JSON.parse(e.target.result);
       if(payload.mappings) { state.mappings = payload.mappings; saveMappings(); renderMappings(); }
       if(payload.customExclusions) { state.customExclusions = payload.customExclusions; saveExclusions(); renderExclusions(); }
+      if(payload.logoBase64) {
+        STOCKPAD_LOGO_B64 = payload.logoBase64;
+        try{ localStorage.setItem(LS_LOGO_KEY, payload.logoBase64); }catch(err){}
+        renderLogoStatus();
+      }
       if(payload.snapshots) localStorage.setItem(LS_SNAPSHOTS_KEY, JSON.stringify(payload.snapshots));
       if(payload.current){
         if(payload.current.rndc) state.rndc = payload.current.rndc;
@@ -1159,8 +1216,13 @@ function buildHTMLSummary(){
   ];
 
   const fontStack = `font-family:Calibri,Arial,sans-serif;`;
-  let html = `<div style="${fontStack}font-size:14px;color:#1a1a1a;">`;
-  html += `<h2 style="margin:0 0 4px;font-size:18px;">StockPad — Low Inventory Flags</h2>`;
+  const logoSrc = `data:image/png;base64,${STOCKPAD_LOGO_B64}`;
+  // email canvas assumed ~600px wide; header mark = 1/20 of that width, square
+  let html = `<div style="${fontStack}font-size:14px;color:#1a1a1a;max-width:600px;">`;
+  html += `<table role="presentation" cellpadding="0" cellspacing="0" style="width:100%;margin:0 0 4px;"><tr>`;
+  html += `<td style="width:30px;vertical-align:top;padding-right:10px;"><img src="${logoSrc}" width="30" height="30" style="display:block;width:30px;height:30px;" alt="Logo"></td>`;
+  html += `<td style="vertical-align:middle;"><h2 style="margin:0;font-size:18px;">StockPad — Low Inventory Flags</h2></td>`;
+  html += `</tr></table>`;
   html += `<p style="margin:0 0 18px;color:#666;font-size:12px;">Generated ${escHtml(new Date().toLocaleString())}</p>`;
 
   sections.forEach(sec => {
@@ -1220,6 +1282,9 @@ function buildHTMLSummary(){
     });
   });
 
+  html += `<div style="text-align:center;margin:24px 0 0;">`;
+  html += `<img src="${logoSrc}" width="18" height="18" style="display:inline-block;width:18px;height:18px;" alt="">`;
+  html += `</div>`;
   html += `</div>`;
   return html;
 }
