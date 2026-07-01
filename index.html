@@ -473,13 +473,22 @@ function estimateWeeksElapsed(monthLabel){
    ============================================================ */
 const EXCLUSION_KEYWORDS = [
   'BUBO', 'DO NOT USE DELETE', 'AUTHENTIC RED', 'FUNF',
-  'PLAYWRIGHT', 'SCARLET', 'TWISTED', 'IRONY', 'SOFIA'
+  'PLAYWRIGHT', 'SCARLET', 'TWISTED', 'IRONY', 'SOFIA',
+  'THREE FINGER JACK GLD MN CHARD', 'THREE FINGER JACK LODI ZIN', 'THREE FINGER JACK RUM BRL RED'
+];
+
+// compound rules: exclude only when BOTH terms appear together as a phrase, so a standalone
+// "Relax" item or a standalone "Prosecco" item is left alone — only "Relax Prosecco" is discontinued.
+const EXCLUSION_PHRASES = [
+  /RELAX\s+PROSECCO/i
 ];
 
 function containsExcludedKeyword(text){
   const t = (text || '').toUpperCase();
   const combined = EXCLUSION_KEYWORDS.concat((state.customExclusions||[]).map(s => (s||'').toUpperCase()));
-  return combined.some(k => k && t.includes(k));
+  if(combined.some(k => k && t.includes(k))) return true;
+  if(EXCLUSION_PHRASES.some(re => re.test(text || ''))) return true;
+  return false;
 }
 
 function isTotalBrand(text){
@@ -490,15 +499,24 @@ function isTotalBrand(text){
 function isOldVintage(text){
   if(!text) return false;
   // Case 1: an explicit 4-digit vintage year anywhere in the text (RNDC / Alliance style)
+  // 2020 and anything earlier is excluded
   const m4 = /\b(19\d{2}|20\d{2})\b/.exec(text);
-  if(m4) return parseInt(m4[1],10) < 2020;
-  // Case 2: a leading 2-digit vintage token right after the item code (Vintage-report style,
+  if(m4) return parseInt(m4[1],10) <= 2020;
+  // Case 2: an apostrophe + 2-digit year mid-string (Alliance sometimes writes it this way,
+  // e.g. "SONOMA CABERNET SAUV '20 - 12/750ML")
+  const mApos = /'(\d{2})\b/.exec(text);
+  if(mApos){
+    const yy = parseInt(mApos[1],10);
+    const full = yy <= 50 ? 2000 + yy : 1900 + yy;
+    return full <= 2020;
+  }
+  // Case 3: a leading 2-digit vintage token right after the item code (Vintage-report style,
   // e.g. "2197 24 COPPOLA DIAMOND PASO CAB SAUV" -> vintage "24" -> 2024)
   const m2 = /^\S+\s+(\d{2})(?:\/\d{2})?\s+/.exec(text);
   if(m2){
     const yy = parseInt(m2[1],10);
     const full = yy <= 50 ? 2000 + yy : 1900 + yy;
-    return full < 2020;
+    return full <= 2020;
   }
   return false;
 }
@@ -748,6 +766,11 @@ function extractVintageYear(text){
   if(!text) return null;
   const m4 = /\b(19\d{2}|20\d{2})\b/.exec(text);
   if(m4) return parseInt(m4[1],10);
+  const mApos = /'(\d{2})\b/.exec(text);
+  if(mApos){
+    const yy = parseInt(mApos[1],10);
+    return yy <= 50 ? 2000+yy : 1900+yy;
+  }
   const m2 = /^\S+\s+(\d{2})(?:\/\d{2})?\s+/.exec(text);
   if(m2){
     const yy = parseInt(m2[1],10);
@@ -1065,10 +1088,14 @@ function generatePDF(){
             const statusWord = current.flagStatus === 'ok' ? 'GREEN — OK'
               : current.flagStatus === 'low' ? 'RED — LOW'
               : current.flagStatus.toUpperCase();
+            // green if the current vintage is in the clear, red if it's flagged too
+            const rgb = current.flagStatus === 'low' ? [220,38,38]
+              : current.flagStatus === 'ok' ? [22,163,74]
+              : [110,110,110];
             if(y > 730){ doc.addPage(); y = 50; }
             doc.setFont('helvetica','italic');
             doc.setFontSize(9);
-            doc.setTextColor(110);
+            doc.setTextColor(rgb[0], rgb[1], rgb[2]);
             doc.text(`   current vintage (${current._vintageYear}) — ${statusWord}: ${curLine1}`, marginX, y);
             y += 12;
             doc.text(`   ${curLine2}`, marginX, y);
