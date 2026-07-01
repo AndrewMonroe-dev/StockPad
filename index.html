@@ -320,6 +320,7 @@
   </div>
   <div class="actions">
     <button onclick="saveSnapshot()">Save snapshot</button>
+    <button onclick="composeEmail()">Compose Outlook email</button>
     <button class="primary" onclick="generatePDF()">Generate flagged-items PDF</button>
   </div>
 </footer>
@@ -444,6 +445,8 @@ async function handleRNDC(file){
 
     state.rndc.items = items;
     state.rndc.filename = file.name;
+    state.rndc.rawBase64 = bufferToBase64(buf);
+    state.rndc.mimeType = 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet';
     document.getElementById('rndc-status').textContent =
       `Parsed ${items.length} items · ${monthLabel||'month unknown'} · ${weeksElapsed.toFixed(1)} wks elapsed`;
     document.getElementById('rndc-count').textContent = items.length + ' items';
@@ -537,14 +540,25 @@ function numOr0(v){
   return isNaN(n) ? 0 : n;
 }
 
+// chunked to avoid call-stack blowups on larger files
+function bufferToBase64(buf){
+  const bytes = new Uint8Array(buf);
+  let binary = '';
+  const chunk = 0x8000;
+  for(let i=0; i<bytes.length; i+=chunk){
+    binary += String.fromCharCode.apply(null, bytes.subarray(i, i+chunk));
+  }
+  return btoa(binary);
+}
+
 /* ============================================================
    ALLIANCE — PDF parsing (pdf.js), regex line matching
    ============================================================ */
 pdfjsLib.GlobalWorkerOptions.workerSrc = 'https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.worker.min.js';
 
-async function extractPdfLines(file){
-  const buf = await file.arrayBuffer();
-  const doc = await pdfjsLib.getDocument({ data: buf }).promise;
+async function extractPdfLines(buf){
+  // pdf.js consumes/detaches the buffer, so hand it a fresh copy and keep the original for later use
+  const doc = await pdfjsLib.getDocument({ data: buf.slice(0) }).promise;
   let lines = [];
   for(let p=1; p<=doc.numPages; p++){
     const page = await doc.getPage(p);
@@ -569,7 +583,8 @@ async function handleAlliance(file){
   document.getElementById('alliance-filename').textContent = file.name;
   document.getElementById('alliance-status').textContent = 'Parsing...';
   try{
-    const lines = await extractPdfLines(file);
+    const buf = await file.arrayBuffer();
+    const lines = await extractPdfLines(buf);
     const pat = /^(\d{3,6})\s+(.+?)\s+([\d.]+)(?:\s+(\d+)\s+(\d{1,2}\/\d{1,2}\/\d{4}))?$/;
     const items = [];
     lines.forEach(ln => {
@@ -603,6 +618,8 @@ async function handleAlliance(file){
 
     state.alliance.items = items;
     state.alliance.filename = file.name;
+    state.alliance.rawBase64 = bufferToBase64(buf);
+    state.alliance.mimeType = 'application/pdf';
     document.getElementById('alliance-status').textContent = `Parsed ${items.length} items`;
     document.getElementById('alliance-count').textContent = items.length + ' items';
     renderAll();
@@ -619,7 +636,8 @@ async function handleVintage(file){
   document.getElementById('vintage-filename').textContent = file.name;
   document.getElementById('vintage-status').textContent = 'Parsing...';
   try{
-    const lines = await extractPdfLines(file);
+    const buf = await file.arrayBuffer();
+    const lines = await extractPdfLines(buf);
     const skipStarts = ['sub-total','grand total','date range','provided by','depletions',
       'vintage wine','roseville','(ph)','(fx)','case','beginning'];
 
@@ -670,6 +688,8 @@ async function handleVintage(file){
 
     state.vintage.items = items;
     state.vintage.filename = file.name;
+    state.vintage.rawBase64 = bufferToBase64(buf);
+    state.vintage.mimeType = 'application/pdf';
     document.getElementById('vintage-status').textContent =
       `Parsed ${items.length} items · ${periodDays.toFixed(0)}-day period`;
     document.getElementById('vintage-count').textContent = items.length + ' items';
@@ -996,7 +1016,7 @@ function importBackup(evt){
 /* ============================================================
    PDF EXPORT — flagged items only, 3 sections
    ============================================================ */
-function generatePDF(){
+function buildPDFDoc(){
   const { jsPDF } = window.jspdf;
   const doc = new jsPDF({ unit:'pt', format:'letter' });
   const marginX = 40;
@@ -1108,7 +1128,143 @@ function generatePDF(){
     y += 10;
   });
 
+  return doc;
+}
+
+function generatePDF(){
+  const doc = buildPDFDoc();
   doc.save(`stockpad-low-inventory-${new Date().toISOString().slice(0,10)}.pdf`);
+}
+
+// Same content as the PDF, but as plain text, for the email body
+function buildPlainTextSummary(){
+  const sections = [
+    { key:'rndc', label:'RNDC', build: it =>
+        `${it.brand} — ${it.product}\n    On Hand ${fmtNum(it.onHand)} · On Order ${fmtNum(it.onOrder)} · ${it.coverageWeeks!==null ? fmtNum(it.coverageWeeks)+' wks coverage' : 'n/a'}` },
+    { key:'alliance', label:'Alliance', build: it =>
+        `${it.description}\n    On Hand ${fmtNum(it.onHand)} · On Order ${fmtNum(it.onOrder)} · Next Receipt ${it.nextReceipt || 'none scheduled'}${it.daysOut!==null ? ' ('+it.daysOut+' days out)' : ''}` },
+    { key:'vintage', label:'Vintage', build: it =>
+        `${it.description}\n    Ending Inv ${fmtNum(it.endingInv)} · ${it.coverageWeeks!==null ? fmtNum(it.coverageWeeks)+' wks coverage' : 'n/a'} · sales pace ${fmtNum(it.weeklyRate)}/wk` }
+  ];
+
+  let out = `StockPad — Low Inventory Flags\nGenerated ${new Date().toLocaleString()}\n\n`;
+
+  sections.forEach(sec => {
+    const allItems = (state[sec.key].items || []).filter(it => !isItemExcluded(it));
+    const flagged = allItems.filter(it => it.flagStatus === 'low');
+
+    const groupMap = {};
+    allItems.forEach(it => {
+      const { text } = itemSearchText(it);
+      it._vintageYear = extractVintageYear(text);
+      it._baseName = baseNameNoVintage(text);
+      if(it._vintageYear !== null){
+        if(!groupMap[it._baseName]) groupMap[it._baseName] = [];
+        groupMap[it._baseName].push(it);
+      }
+    });
+
+    out += `${sec.label.toUpperCase()}\n${'-'.repeat(sec.label.length)}\n`;
+    if(flagged.length === 0){
+      out += 'No low-inventory items flagged.\n\n';
+      return;
+    }
+    flagged.forEach(it => {
+      out += `- ${sec.build(it)}\n`;
+      if(it._vintageYear !== null){
+        const group = groupMap[it._baseName];
+        if(group && group.length > 1){
+          const current = group.reduce((a,b) => (b._vintageYear > a._vintageYear ? b : a));
+          if(current !== it){
+            const statusWord = current.flagStatus === 'ok' ? 'GREEN — OK'
+              : current.flagStatus === 'low' ? 'RED — LOW'
+              : current.flagStatus.toUpperCase();
+            out += `    current vintage (${current._vintageYear}) — ${statusWord}: ${sec.build(current)}\n`;
+          }
+        }
+      }
+    });
+    out += '\n';
+  });
+
+  return out;
+}
+
+/* ============================================================
+   EMAIL EXPORT — builds a .eml file with the summary as the body
+   and the three original source files attached
+   ============================================================ */
+function foldMimeLine(base64){
+  // RFC 2045 wants base64 body lines wrapped at 76 chars
+  return base64.match(/.{1,76}/g).join('\r\n');
+}
+
+function composeEmail(){
+  const hasAny = state.rndc.rawBase64 || state.alliance.rawBase64 || state.vintage.rawBase64;
+  if(!hasAny){
+    alert('Upload at least one distributor file first.');
+    return;
+  }
+
+  const boundary = 'stockpad_' + Date.now().toString(36);
+  const subject = `StockPad — Low Inventory Flags ${new Date().toLocaleDateString()}`;
+  const bodyText = buildPlainTextSummary();
+
+  const pdfDoc = buildPDFDoc();
+  const pdfBase64 = pdfDoc.output('datauristring').split(',')[1]; // strip data:...;base64,
+
+  const attachments = [];
+  if(state.rndc.rawBase64) attachments.push({
+    filename: state.rndc.filename || 'RNDC.xlsx',
+    mime: state.rndc.mimeType,
+    base64: state.rndc.rawBase64
+  });
+  if(state.alliance.rawBase64) attachments.push({
+    filename: state.alliance.filename || 'Alliance.pdf',
+    mime: state.alliance.mimeType,
+    base64: state.alliance.rawBase64
+  });
+  if(state.vintage.rawBase64) attachments.push({
+    filename: state.vintage.filename || 'Vintage.pdf',
+    mime: state.vintage.mimeType,
+    base64: state.vintage.rawBase64
+  });
+  attachments.push({
+    filename: `stockpad-low-inventory-${new Date().toISOString().slice(0,10)}.pdf`,
+    mime: 'application/pdf',
+    base64: pdfBase64
+  });
+
+  let eml = '';
+  eml += `MIME-Version: 1.0\r\n`;
+  eml += `Subject: ${subject}\r\n`;
+  eml += `X-Unsent: 1\r\n`; // hints Outlook to treat this as a draft, not a received message
+  eml += `Content-Type: multipart/mixed; boundary="${boundary}"\r\n\r\n`;
+
+  eml += `--${boundary}\r\n`;
+  eml += `Content-Type: text/plain; charset="UTF-8"\r\n`;
+  eml += `Content-Transfer-Encoding: 7bit\r\n\r\n`;
+  eml += bodyText.replace(/\n/g, '\r\n') + '\r\n\r\n';
+
+  attachments.forEach(att => {
+    eml += `--${boundary}\r\n`;
+    eml += `Content-Type: ${att.mime}; name="${att.filename}"\r\n`;
+    eml += `Content-Transfer-Encoding: base64\r\n`;
+    eml += `Content-Disposition: attachment; filename="${att.filename}"\r\n\r\n`;
+    eml += foldMimeLine(att.base64) + '\r\n\r\n';
+  });
+
+  eml += `--${boundary}--`;
+
+  const blob = new Blob([eml], { type:'message/rfc822' });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = `stockpad-low-inventory-${new Date().toISOString().slice(0,10)}.eml`;
+  a.click();
+  URL.revokeObjectURL(url);
+
+  alert('Email file downloaded. Open it (double-click) to load it into Outlook as a draft with all attachments — review the recipient and hit send from there.');
 }
 
 /* ============================================================
