@@ -5,7 +5,6 @@
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>StockPad — Distributor Inventory Tracker</title>
 <link rel="icon" href="logo.png">
-<script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.min.js"></script>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js"></script>
 <style>
@@ -261,17 +260,6 @@
   <div class="grid3">
 
     <div class="dist-card">
-      <h2>RNDC <span class="count" id="rndc-count">0 items</span></h2>
-      <div class="dropzone" id="rndc-drop" onclick="document.getElementById('rndc-file').click()">
-        Drop RNDC .xlsx here<br>or click to browse
-        <input type="file" id="rndc-file" accept=".xlsx,.xls">
-      </div>
-      <div class="filename" id="rndc-filename"></div>
-      <div class="threshold-row">Coverage flag under <input type="number" id="rndc-weeks" value="2" step="0.5"> weeks</div>
-      <div class="status-line" id="rndc-status"></div>
-    </div>
-
-    <div class="dist-card">
       <h2>Alliance <span class="count" id="alliance-count">0 items</span></h2>
       <div class="dropzone" id="alliance-drop" onclick="document.getElementById('alliance-file').click()">
         Drop Alliance .pdf here<br>or click to browse
@@ -305,7 +293,7 @@
 
   <div class="mapping-panel">
     <h3>Excluded brands / keywords</h3>
-    <p>Type any word or phrase — brand name, SKU note, whatever — and items containing it (across all three distributors) are dropped from tracking entirely, on every file from now on. Applies instantly to anything already uploaded, no re-upload needed.</p>
+    <p>Type any word or phrase — brand name, SKU note, whatever — and items containing it (across all distributors) are dropped from tracking entirely, on every file from now on. Applies instantly to anything already uploaded, no re-upload needed.</p>
     <div style="display:flex;gap:8px;margin-bottom:12px;">
       <input id="exclusion-input" placeholder="e.g. a discontinued brand name" style="flex:1;background:var(--panel2);border:1px solid var(--border);color:var(--text);border-radius:6px;padding:7px 10px;font-size:12.5px;" onkeydown="if(event.key==='Enter')addExclusion()">
       <button class="primary" onclick="addExclusion()">Add</button>
@@ -349,7 +337,6 @@
 let STOCKPAD_LOGO_B64 = '';
 
 const state = {
-  rndc: { items: [], filename: '' },
   alliance: { items: [], filename: '' },
   vintage: { items: [], filename: '', dateRangeDays: 14 },
   mappings: [],
@@ -402,99 +389,8 @@ function wireDropzone(id, fileInputId, handler){
   });
 }
 
-wireDropzone('rndc-drop','rndc-file', handleRNDC);
 wireDropzone('alliance-drop','alliance-file', handleAlliance);
 wireDropzone('vintage-drop','vintage-file', handleVintage);
-
-/* ============================================================
-   RNDC — Excel parsing (SheetJS)
-   ============================================================ */
-async function handleRNDC(file){
-  document.getElementById('rndc-filename').textContent = file.name;
-  document.getElementById('rndc-status').textContent = 'Parsing...';
-  try{
-    const buf = await file.arrayBuffer();
-    const wb = XLSX.read(buf, { type:'array' });
-    const ws = wb.Sheets[wb.SheetNames[0]];
-    const rows = XLSX.utils.sheet_to_json(ws, { header:1, raw:true, defval:null });
-
-    // find header row (col E / idx4 contains 'Metrics')
-    let headerIdx = -1, monthLabel = null;
-    for(let i=0;i<rows.length;i++){
-      const r = rows[i];
-      if(r && typeof r[4] === 'string' && r[4].toLowerCase().includes('metric')){
-        headerIdx = i;
-      }
-      if(r && typeof r[5] === 'string' && /^[A-Za-z]{3}-\d{4}$/.test(r[5])){
-        monthLabel = r[5];
-      }
-    }
-    if(headerIdx === -1) throw new Error('Could not locate header row (expected a "Metrics" label)');
-
-    const weeksElapsed = estimateWeeksElapsed(monthLabel);
-
-    const items = [];
-    for(let i=headerIdx+1;i<rows.length;i++){
-      const r = rows[i];
-      if(!r) continue;
-      const brand = r[0], product = r[1];
-      if(!brand && !product) continue;
-      const onHand = numOr0(r[5]);
-      const onOrder = numOr0(r[6]);
-      const supplierCases = numOr0(r[7]);
-      const supplierCasesLY = numOr0(r[8]);
-      const ytd = numOr0(r[9]);
-      const ytdLY = numOr0(r[10]);
-      if(onHand===0 && onOrder===0 && supplierCases===0 && ytd===0) continue; // blank trailing rows
-      const brandStr = String(brand||'').trim(), productStr = String(product||'').trim();
-      items.push({ brand: brandStr, product: productStr, _kind:'rndc',
-        onHand, onOrder, supplierCases, supplierCasesLY, ytd, ytdLY });
-    }
-
-    const weeklyRateOf = it => weeksElapsed > 0 ? it.ytd / weeksElapsed : 0;
-    const thresholdWeeks = parseFloat(document.getElementById('rndc-weeks').value) || 2;
-    items.forEach(it => {
-      const rate = weeklyRateOf(it);
-      it.weeklyRate = rate;
-      // Rule: no LY YTD volume and under 1 case YTD this year = too thin to mean anything, never flag
-      if(it.ytdLY === 0 && it.ytd < 1){
-        it.flagStatus = 'thin'; it.coverageWeeks = null;
-      } else if(rate <= 0){
-        it.flagStatus = 'dead'; it.coverageWeeks = null;
-      } else {
-        const coverage = (it.onHand + it.onOrder) / rate;
-        it.coverageWeeks = coverage;
-        it.flagStatus = coverage < thresholdWeeks ? 'low' : 'ok';
-      }
-    });
-
-    state.rndc.items = items;
-    state.rndc.filename = file.name;
-    state.rndc.rawBase64 = bufferToBase64(buf);
-    state.rndc.mimeType = 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet';
-    document.getElementById('rndc-status').textContent =
-      `Parsed ${items.length} items · ${monthLabel||'month unknown'} · ${weeksElapsed.toFixed(1)} wks elapsed`;
-    document.getElementById('rndc-count').textContent = items.length + ' items';
-    renderAll();
-  }catch(err){
-    document.getElementById('rndc-status').textContent = 'Error: ' + err.message;
-    console.error(err);
-  }
-}
-
-function estimateWeeksElapsed(monthLabel){
-  // monthLabel like "Jun-2026" -> weeks elapsed from Jan 1 through END of that month
-  if(!monthLabel) return 26; // fallback: assume mid-year
-  const months = {jan:0,feb:1,mar:2,apr:3,may:4,jun:5,jul:6,aug:7,sep:8,oct:9,nov:10,dec:11};
-  const parts = monthLabel.split('-');
-  const m = months[parts[0].toLowerCase()];
-  const y = parseInt(parts[1],10);
-  if(m===undefined || isNaN(y)) return 26;
-  const endOfMonth = new Date(y, m+1, 0);
-  const jan1 = new Date(y,0,1);
-  const days = (endOfMonth - jan1) / 86400000;
-  return Math.max(days/7, 1);
-}
 
 /* ============================================================
    EXCLUSION RULES — items that should never be tracked/flagged
@@ -526,7 +422,7 @@ function isTotalBrand(text){
 
 function isOldVintage(text){
   if(!text) return false;
-  // Case 1: an explicit 4-digit vintage year anywhere in the text (RNDC / Alliance style)
+  // Case 1: an explicit 4-digit vintage year anywhere in the text (Alliance style)
   // 2020 and anything earlier is excluded
   const m4 = /\b(19\d{2}|20\d{2})\b/.exec(text);
   if(m4) return parseInt(m4[1],10) <= 2020;
@@ -557,12 +453,6 @@ function shouldExcludeItem(fullText, brandText){
   if(isTotalBrand(brandText || fullText)) return true;
   if(isOldVintage(fullText)) return true;
   return false;
-}
-
-function numOr0(v){
-  if(v===null||v===undefined||v==='') return 0;
-  const n = parseFloat(v);
-  return isNaN(n) ? 0 : n;
 }
 
 // chunked to avoid call-stack blowups on larger files
@@ -736,7 +626,6 @@ function renderMappings(){
     row.className = 'map-row';
     row.innerHTML = `
       <input placeholder="Master item name" value="${escAttr(m.masterName||'')}" onchange="updateMapping(${idx},'masterName',this.value)">
-      <input placeholder="RNDC match text" value="${escAttr(m.rndcMatch||'')}" onchange="updateMapping(${idx},'rndcMatch',this.value)">
       <input placeholder="Alliance match text" value="${escAttr(m.allianceMatch||'')}" onchange="updateMapping(${idx},'allianceMatch',this.value)">
       <input placeholder="Vintage match text" value="${escAttr(m.vintageMatch||'')}" onchange="updateMapping(${idx},'vintageMatch',this.value)">
       <button class="ghost" onclick="removeMapping(${idx})">✕</button>
@@ -745,7 +634,7 @@ function renderMappings(){
   });
 }
 function addMappingRow(){
-  state.mappings.push({ masterName:'', rndcMatch:'', allianceMatch:'', vintageMatch:'' });
+  state.mappings.push({ masterName:'', allianceMatch:'', vintageMatch:'' });
   saveMappings(); renderMappings();
 }
 function updateMapping(idx, field, value){
@@ -833,7 +722,6 @@ function removeExclusion(idx){
 
 /* ---- resolve searchable text + brand for any parsed item, for exclusion matching ---- */
 function itemSearchText(it){
-  if(it._kind === 'rndc') return { text: it.brand + ' ' + it.product, brand: it.brand };
   return { text: it.description, brand: null };
 }
 function isItemExcluded(it){
@@ -887,9 +775,6 @@ function renderAll(){
   container.innerHTML = '';
 
   const sections = [
-    { key:'rndc', label:'RNDC', cols:['brand','product'], numCols:[
-        {k:'onHand',l:'On Hand'},{k:'onOrder',l:'On Order'},{k:'weeklyRate',l:'Wkly Rate',fmt:1},
-        {k:'coverageWeeks',l:'Wks Cover',fmt:1}] },
     { key:'alliance', label:'Alliance', cols:['description'], numCols:[
         {k:'onHand',l:'On Hand'},{k:'onOrder',l:'On Order'},{k:'daysOut',l:'Days to Next Recv'}] },
     { key:'vintage', label:'Vintage', cols:['description'], numCols:[
@@ -1006,7 +891,6 @@ function saveSnapshot(){
   try{ snaps = JSON.parse(localStorage.getItem(LS_SNAPSHOTS_KEY)) || []; }catch(e){}
   snaps.push({
     date: stamp,
-    rndc: { filename: state.rndc.filename, items: state.rndc.items },
     alliance: { filename: state.alliance.filename, items: state.alliance.items },
     vintage: { filename: state.vintage.filename, items: state.vintage.items }
   });
@@ -1032,7 +916,7 @@ function exportBackup(){
     logoBase64: STOCKPAD_LOGO_B64 || null,
     snapshots: snaps,
     current: {
-      rndc: state.rndc, alliance: state.alliance, vintage: state.vintage
+      alliance: state.alliance, vintage: state.vintage
     }
   };
   const blob = new Blob([JSON.stringify(payload,null,2)], {type:'application/json'});
@@ -1060,13 +944,10 @@ function importBackup(evt){
       }
       if(payload.snapshots) localStorage.setItem(LS_SNAPSHOTS_KEY, JSON.stringify(payload.snapshots));
       if(payload.current){
-        if(payload.current.rndc) state.rndc = payload.current.rndc;
         if(payload.current.alliance) state.alliance = payload.current.alliance;
         if(payload.current.vintage) state.vintage = payload.current.vintage;
-        document.getElementById('rndc-filename').textContent = state.rndc.filename||'';
         document.getElementById('alliance-filename').textContent = state.alliance.filename||'';
         document.getElementById('vintage-filename').textContent = state.vintage.filename||'';
-        document.getElementById('rndc-count').textContent = (state.rndc.items.length||0)+' items';
         document.getElementById('alliance-count').textContent = (state.alliance.items.length||0)+' items';
         document.getElementById('vintage-count').textContent = (state.vintage.items.length||0)+' items';
       }
@@ -1080,7 +961,7 @@ function importBackup(evt){
 }
 
 /* ============================================================
-   PDF EXPORT — flagged items only, 3 sections
+   PDF EXPORT — flagged items only, one section per distributor
    ============================================================ */
 function buildPDFDoc(){
   const { jsPDF } = window.jspdf;
@@ -1100,10 +981,6 @@ function buildPDFDoc(){
   y += 26;
 
   const sections = [
-    { key:'rndc', label:'RNDC', build: it => [
-        `${it.brand} — ${it.product}`,
-        `On Hand ${fmtNum(it.onHand)} · On Order ${fmtNum(it.onOrder)} · ${it.coverageWeeks!==null ? fmtNum(it.coverageWeeks)+' wks coverage' : 'n/a'}`
-      ]},
     { key:'alliance', label:'Alliance', build: it => [
         it.description,
         `On Hand ${fmtNum(it.onHand)} · On Order ${fmtNum(it.onOrder)} · Next Receipt ${it.nextReceipt || 'none scheduled'}${it.daysOut!==null ? ' ('+it.daysOut+' days out)' : ''}`
@@ -1212,9 +1089,6 @@ function escHtml(s){
 
 function buildHTMLSummary(){
   const sections = [
-    { key:'rndc', label:'RNDC', build: it =>
-        [`${escHtml(it.brand)} — ${escHtml(it.product)}`,
-         `On Hand ${fmtNum(it.onHand)} · On Order ${fmtNum(it.onOrder)} · ${it.coverageWeeks!==null ? fmtNum(it.coverageWeeks)+' wks coverage' : 'n/a'}`] },
     { key:'alliance', label:'Alliance', build: it =>
         [escHtml(it.description),
          `On Hand ${fmtNum(it.onHand)} · On Order ${fmtNum(it.onOrder)} · Next Receipt ${it.nextReceipt || 'none scheduled'}${it.daysOut!==null ? ' ('+it.daysOut+' days out)' : ''}`] },
@@ -1298,7 +1172,7 @@ function buildHTMLSummary(){
 }
 
 async function copyFormattedEmail(){
-  const hasAny = state.rndc.items.length || state.alliance.items.length || state.vintage.items.length;
+  const hasAny = state.alliance.items.length || state.vintage.items.length;
   if(!hasAny){
     alert('Upload at least one distributor file first.');
     return;
@@ -1320,8 +1194,6 @@ async function copyFormattedEmail(){
 
 function buildPlainTextSummary(){
   const sections = [
-    { key:'rndc', label:'RNDC', build: it =>
-        `${it.brand} — ${it.product}\n    On Hand ${fmtNum(it.onHand)} · On Order ${fmtNum(it.onOrder)} · ${it.coverageWeeks!==null ? fmtNum(it.coverageWeeks)+' wks coverage' : 'n/a'}` },
     { key:'alliance', label:'Alliance', build: it =>
         `${it.description}\n    On Hand ${fmtNum(it.onHand)} · On Order ${fmtNum(it.onOrder)} · Next Receipt ${it.nextReceipt || 'none scheduled'}${it.daysOut!==null ? ' ('+it.daysOut+' days out)' : ''}` },
     { key:'vintage', label:'Vintage', build: it =>
@@ -1373,7 +1245,7 @@ function buildPlainTextSummary(){
 
 /* ============================================================
    EMAIL EXPORT — builds a .eml file with the summary as the body
-   and the three original source files attached
+   and the original source files attached
    ============================================================ */
 function foldMimeLine(base64){
   // RFC 2045 wants base64 body lines wrapped at 76 chars
@@ -1381,7 +1253,7 @@ function foldMimeLine(base64){
 }
 
 function composeEmail(){
-  const hasAny = state.rndc.rawBase64 || state.alliance.rawBase64 || state.vintage.rawBase64;
+  const hasAny = state.alliance.rawBase64 || state.vintage.rawBase64;
   if(!hasAny){
     alert('Upload at least one distributor file first.');
     return;
@@ -1395,11 +1267,6 @@ function composeEmail(){
   const pdfBase64 = pdfDoc.output('datauristring').split(',')[1]; // strip data:...;base64,
 
   const attachments = [];
-  if(state.rndc.rawBase64) attachments.push({
-    filename: state.rndc.filename || 'RNDC.xlsx',
-    mime: state.rndc.mimeType,
-    base64: state.rndc.rawBase64
-  });
   if(state.alliance.rawBase64) attachments.push({
     filename: state.alliance.filename || 'Alliance.pdf',
     mime: state.alliance.mimeType,
