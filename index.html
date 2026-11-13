@@ -5,6 +5,7 @@
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>StockPad — Distributor Inventory Tracker</title>
 <link rel="icon" href="logo.png">
+<script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.min.js"></script>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js"></script>
 <style>
@@ -260,6 +261,17 @@
   <div class="grid3">
 
     <div class="dist-card">
+      <h2>Imperial Beverage <span class="count" id="imperial-count">0 items</span></h2>
+      <div class="dropzone" id="imperial-drop" onclick="document.getElementById('imperial-file').click()">
+        Drop Imperial Beverage .xlsx here<br>or click to browse
+        <input type="file" id="imperial-file" accept=".xlsx,.xls">
+      </div>
+      <div class="filename" id="imperial-filename"></div>
+      <div class="threshold-row">On Hand flag under <input type="number" id="imperial-onhand" value="5" step="0.5"> cases (nothing on order)</div>
+      <div class="status-line" id="imperial-status"></div>
+    </div>
+
+    <div class="dist-card">
       <h2>Alliance <span class="count" id="alliance-count">0 items</span></h2>
       <div class="dropzone" id="alliance-drop" onclick="document.getElementById('alliance-file').click()">
         Drop Alliance .pdf here<br>or click to browse
@@ -337,6 +349,7 @@
 let STOCKPAD_LOGO_B64 = '';
 
 const state = {
+  imperial: { items: [], filename: '' },
   alliance: { items: [], filename: '' },
   vintage: { items: [], filename: '', dateRangeDays: 14 },
   mappings: [],
@@ -389,8 +402,147 @@ function wireDropzone(id, fileInputId, handler){
   });
 }
 
+wireDropzone('imperial-drop','imperial-file', handleImperial);
 wireDropzone('alliance-drop','alliance-file', handleAlliance);
 wireDropzone('vintage-drop','vintage-file', handleVintage);
+
+/* ============================================================
+   IMPERIAL BEVERAGE — Excel parsing (SheetJS)
+   Report columns used: IB #, Product Name, Current Vintage, Ordered, Available.
+   Available already includes what is on order, so On Hand = Available - Ordered.
+   The report has no sales figures, so flagging works like Alliance: low on hand and
+   nothing on order. Every row is kept (new products show up on their own), except the
+   empty no-vintage twin of a row that has a vintage.
+   ============================================================ */
+// "Brand Name 1/12B/750mL 2017#" -> brand, pack, optional year after the pack size, trailing marker (# ? ! *, sometimes followed by _2) ignored
+const IMPERIAL_PACK_RE = /^(.*\S)\s+(\d+\/\d*[A-Za-z]+\/[\d.]+\s*(?:mL|L))(?:\s+((?:19|20)\d{2}))?$/i;
+
+function numOr0(v){
+  if(v===null||v===undefined||v==='') return 0;
+  const n = parseFloat(v);
+  return isNaN(n) ? 0 : n;
+}
+function round2(n){ return Math.round(n*100)/100; }
+
+// vintage year of an Imperial item: the Current Vintage column first, else the year after the pack size
+function imperialVintage(it){
+  const v = parseInt(it.vintage,10);
+  if(!isNaN(v)) return v;
+  return it.nameYear || null;
+}
+
+// keys (IB # + vintage) of every item in the most recent saved snapshot that had Imperial data, or null if none
+function lastImperialKeys(){
+  let snaps = [];
+  try{ snaps = JSON.parse(localStorage.getItem(LS_SNAPSHOTS_KEY)) || []; }catch(e){}
+  for(let i=snaps.length-1;i>=0;i--){
+    const s = snaps[i].imperial;
+    if(s && s.items && s.items.length) return new Set(s.items.map(x => x.key));
+  }
+  return null;
+}
+
+async function handleImperial(file){
+  document.getElementById('imperial-filename').textContent = file.name;
+  document.getElementById('imperial-status').textContent = 'Parsing...';
+  try{
+    const buf = await file.arrayBuffer();
+    const wb = XLSX.read(buf, { type:'array', cellDates:true });
+
+    // the inventory sheet is the one whose header row has both "IB #" and "Product Name"
+    let rows = null;
+    for(const sn of wb.SheetNames){
+      const r = XLSX.utils.sheet_to_json(wb.Sheets[sn], { header:1, raw:true, defval:null });
+      if(r.length && r[0] && r[0].includes('IB #') && r[0].includes('Product Name')){ rows = r; break; }
+    }
+    if(!rows) throw new Error('Could not find the inventory sheet (expected "IB #" and "Product Name" headers)');
+    const head = rows[0].map(h => String(h||'').trim());
+    const col = n => head.indexOf(n);
+    const missing = ['IB #','Product Name','Current Vintage','Ordered','Available'].filter(n => col(n) === -1);
+    if(missing.length) throw new Error('Missing column(s): ' + missing.join(', '));
+
+    const raw = [];
+    for(let i=1;i<rows.length;i++){
+      const r = rows[i];
+      if(!r) continue;
+      const name = String(r[col('Product Name')] || '').trim();
+      if(!name) continue;
+      const vc = r[col('Current Vintage')];
+      const vintage = (vc===null || vc===undefined || String(vc).trim()==='') ? null : String(vc).trim();
+      const cleaned = name.replace(/[#?!*]+(?:_\d+)?$/,'').trim();
+      const m = IMPERIAL_PACK_RE.exec(cleaned);
+      raw.push({
+        ib: String(r[col('IB #')] || '').trim() || name,
+        name, vintage,
+        brand: m ? m[1] : cleaned,
+        pack: m ? m[2] : '',
+        nameYear: (m && m[3]) ? parseInt(m[3],10) : null,
+        available: round2(numOr0(r[col('Available')])),
+        onOrder: round2(numOr0(r[col('Ordered')]))
+      });
+    }
+
+    // collapse: an empty no-vintage row is dropped when the same IB # has a row with a vintage,
+    // and rows with the same IB # and vintage are added together
+    const ibsWithVintage = new Set(raw.filter(x => x.vintage).map(x => x.ib));
+    const byKey = new Map();
+    raw.forEach(x => {
+      if(!x.vintage && x.available===0 && x.onOrder===0 && ibsWithVintage.has(x.ib)) return;
+      const key = x.ib + '|' + (x.vintage || x.nameYear || '');
+      const ex = byKey.get(key);
+      if(ex){
+        ex.available = round2(ex.available + x.available);
+        ex.onOrder = round2(ex.onOrder + x.onOrder);
+      } else {
+        byKey.set(key, Object.assign({ key }, x));
+      }
+    });
+
+    const onHandCutoff = parseFloat(document.getElementById('imperial-onhand').value) || 5;
+    const lastKeys = lastImperialKeys();
+    const items = [...byKey.values()].map(x => {
+      const onHand = round2(x.available - x.onOrder);
+      const it = {
+        _kind:'imperial', key:x.key, ib:x.ib,
+        description: x.name + ((x.vintage && !x.nameYear) ? ` (${x.vintage})` : ''),
+        baseName: (x.brand + ' ' + x.pack).toUpperCase().replace(/[^A-Z0-9]+/g,' ').trim(),
+        vintage: x.vintage, nameYear: x.nameYear,
+        available: x.available, onHand, onOrder: x.onOrder
+      };
+      if(onHand < 0.005 && x.onOrder < 0.005){
+        // nothing on hand and nothing coming: a real out-of-stock if it has a current vintage, otherwise just empty
+        it.flagStatus = x.vintage ? 'low' : 'no stock';
+      } else if(onHand < onHandCutoff && x.onOrder < 0.005){
+        it.flagStatus = 'low';
+      } else {
+        it.flagStatus = 'ok';
+      }
+      // NEW = not in the last saved snapshot (no tags at all until a snapshot with Imperial data exists)
+      it.isNew = !!lastKeys && !lastKeys.has(x.key);
+      return it;
+    });
+
+    let created = '';
+    try{
+      const det = wb.Sheets['Details'] ? XLSX.utils.sheet_to_json(wb.Sheets['Details'], { header:1, raw:true, defval:null }) : [];
+      const row = det.find(r => r && r[0] === 'Report Created Time');
+      if(row && row[2] instanceof Date) created = ' · report from ' + row[2].toLocaleString();
+    }catch(e){}
+
+    state.imperial.items = items;
+    state.imperial.filename = file.name;
+    state.imperial.rawBase64 = bufferToBase64(buf);
+    state.imperial.mimeType = 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet';
+    const newN = items.filter(i => i.isNew).length;
+    document.getElementById('imperial-status').textContent =
+      `Parsed ${items.length} items${created}` + (lastKeys ? ` · ${newN} new since last snapshot` : ' · no saved snapshot yet, so nothing is tagged NEW');
+    document.getElementById('imperial-count').textContent = items.length + ' items';
+    renderAll();
+  }catch(err){
+    document.getElementById('imperial-status').textContent = 'Error: ' + err.message;
+    console.error(err);
+  }
+}
 
 /* ============================================================
    EXCLUSION RULES — items that should never be tracked/flagged
@@ -626,6 +778,7 @@ function renderMappings(){
     row.className = 'map-row';
     row.innerHTML = `
       <input placeholder="Master item name" value="${escAttr(m.masterName||'')}" onchange="updateMapping(${idx},'masterName',this.value)">
+      <input placeholder="Imperial match text" value="${escAttr(m.imperialMatch||'')}" onchange="updateMapping(${idx},'imperialMatch',this.value)">
       <input placeholder="Alliance match text" value="${escAttr(m.allianceMatch||'')}" onchange="updateMapping(${idx},'allianceMatch',this.value)">
       <input placeholder="Vintage match text" value="${escAttr(m.vintageMatch||'')}" onchange="updateMapping(${idx},'vintageMatch',this.value)">
       <button class="ghost" onclick="removeMapping(${idx})">✕</button>
@@ -634,7 +787,7 @@ function renderMappings(){
   });
 }
 function addMappingRow(){
-  state.mappings.push({ masterName:'', allianceMatch:'', vintageMatch:'' });
+  state.mappings.push({ masterName:'', imperialMatch:'', allianceMatch:'', vintageMatch:'' });
   saveMappings(); renderMappings();
 }
 function updateMapping(idx, field, value){
@@ -725,6 +878,12 @@ function itemSearchText(it){
   return { text: it.description, brand: null };
 }
 function isItemExcluded(it){
+  if(it._kind === 'imperial'){
+    // vintage comes from the vintage column or the year after the pack size, never from a brand name like "1924"
+    if(containsExcludedKeyword(it.description) || isTotalBrand(it.description)) return true;
+    const vy = imperialVintage(it);
+    return vy !== null && vy <= 2020;
+  }
   const { text, brand } = itemSearchText(it);
   return shouldExcludeItem(text, brand);
 }
@@ -746,6 +905,14 @@ function extractVintageYear(text){
   }
   return null;
 }
+function itemVintageYear(it){
+  return it._kind === 'imperial' ? imperialVintage(it) : extractVintageYear(itemSearchText(it).text);
+}
+function itemBaseName(it){
+  return it._kind === 'imperial' ? it.baseName : baseNameNoVintage(itemSearchText(it).text);
+}
+// tracked items that belong in an export: flagged low, plus anything NEW since the last snapshot
+function isListed(it){ return it.flagStatus === 'low' || !!it.isNew; }
 function baseNameNoVintage(text){
   if(!text) return '';
   let t = text;
@@ -775,6 +942,8 @@ function renderAll(){
   container.innerHTML = '';
 
   const sections = [
+    { key:'imperial', label:'Imperial Beverage', cols:['description'], numCols:[
+        {k:'onHand',l:'On Hand'},{k:'onOrder',l:'On Order'}] },
     { key:'alliance', label:'Alliance', cols:['description'], numCols:[
         {k:'onHand',l:'On Hand'},{k:'onOrder',l:'On Order'},{k:'daysOut',l:'Days to Next Recv'}] },
     { key:'vintage', label:'Vintage', cols:['description'], numCols:[
@@ -817,14 +986,13 @@ function renderAll(){
 
     const tbody = document.createElement('tbody');
     // sort: low first, then thin/dead, then ok
-    const order = {low:0, thin:1, dead:1, ok:2};
+    const order = {low:0, thin:1, dead:1, 'no stock':1, ok:2};
 
     // build vintage groups (same base product name across multiple vintage years)
     const groupMap = {};
     data.forEach(it => {
-      const { text } = itemSearchText(it);
-      it._vintageYear = extractVintageYear(text);
-      it._baseName = baseNameNoVintage(text);
+      it._vintageYear = itemVintageYear(it);
+      it._baseName = itemBaseName(it);
       if(it._vintageYear !== null){
         if(!groupMap[it._baseName]) groupMap[it._baseName] = [];
         groupMap[it._baseName].push(it);
@@ -834,12 +1002,12 @@ function renderAll(){
     [...data].sort((a,b)=>(order[a.flagStatus]??3)-(order[b.flagStatus]??3)).forEach(it => {
       const tr = document.createElement('tr');
       if(it.flagStatus==='low') tr.className='flag';
-      let nameCell = sec.cols[0]==='brand' ? `<b>${it.brand}</b><br><span style="color:var(--text-dim)">${it.product}</span>` : it.description;
+      let nameCell = sec.cols[0]==='brand' ? `<b>${it.brand}</b><br><span style="color:var(--text-dim)">${it.product}</span>` : it.description + (it.isNew ? ' <span class="pill thin">NEW</span>' : '');
       let rowHtml = `<td class="name">${nameCell}</td>`;
       sec.numCols.forEach(nc => {
         rowHtml += `<td>${fmtNum(it[nc.k])}</td>`;
       });
-      const pillMap = { low:['low','LOW'], dead:['dead','NO SALES'], thin:['thin','TOO THIN'], ok:['ok','OK'] };
+      const pillMap = { low:['low','LOW'], dead:['dead','NO SALES'], 'no stock':['dead','NO STOCK'], thin:['thin','TOO THIN'], ok:['ok','OK'] };
       const [pillClass, pillLabel] = pillMap[it.flagStatus] || ['ok','OK'];
       rowHtml += `<td><span class="pill ${pillClass}">${pillLabel}</span></td>`;
       tr.innerHTML = rowHtml;
@@ -891,6 +1059,9 @@ function saveSnapshot(){
   try{ snaps = JSON.parse(localStorage.getItem(LS_SNAPSHOTS_KEY)) || []; }catch(e){}
   snaps.push({
     date: stamp,
+    // compact on purpose: up to 60 snapshots live in localStorage, and only the key is needed to spot NEW items later
+    imperial: { filename: state.imperial.filename, items: state.imperial.items.map(it => ({
+      key: it.key, description: it.description, onHand: it.onHand, onOrder: it.onOrder, flagStatus: it.flagStatus })) },
     alliance: { filename: state.alliance.filename, items: state.alliance.items },
     vintage: { filename: state.vintage.filename, items: state.vintage.items }
   });
@@ -916,7 +1087,7 @@ function exportBackup(){
     logoBase64: STOCKPAD_LOGO_B64 || null,
     snapshots: snaps,
     current: {
-      alliance: state.alliance, vintage: state.vintage
+      imperial: state.imperial, alliance: state.alliance, vintage: state.vintage
     }
   };
   const blob = new Blob([JSON.stringify(payload,null,2)], {type:'application/json'});
@@ -944,8 +1115,11 @@ function importBackup(evt){
       }
       if(payload.snapshots) localStorage.setItem(LS_SNAPSHOTS_KEY, JSON.stringify(payload.snapshots));
       if(payload.current){
+        if(payload.current.imperial) state.imperial = payload.current.imperial;
         if(payload.current.alliance) state.alliance = payload.current.alliance;
         if(payload.current.vintage) state.vintage = payload.current.vintage;
+        document.getElementById('imperial-filename').textContent = state.imperial.filename||'';
+        document.getElementById('imperial-count').textContent = (state.imperial.items.length||0)+' items';
         document.getElementById('alliance-filename').textContent = state.alliance.filename||'';
         document.getElementById('vintage-filename').textContent = state.vintage.filename||'';
         document.getElementById('alliance-count').textContent = (state.alliance.items.length||0)+' items';
@@ -981,6 +1155,10 @@ function buildPDFDoc(){
   y += 26;
 
   const sections = [
+    { key:'imperial', label:'Imperial Beverage', build: it => [
+        `${it.description}${it.isNew ? '  [NEW]' : ''}`,
+        `On Hand ${fmtNum(it.onHand)} · On Order ${fmtNum(it.onOrder)}`
+      ]},
     { key:'alliance', label:'Alliance', build: it => [
         it.description,
         `On Hand ${fmtNum(it.onHand)} · On Order ${fmtNum(it.onOrder)} · Next Receipt ${it.nextReceipt || 'none scheduled'}${it.daysOut!==null ? ' ('+it.daysOut+' days out)' : ''}`
@@ -993,15 +1171,14 @@ function buildPDFDoc(){
 
   sections.forEach(sec => {
     const allItems = (state[sec.key].items || []).filter(it => !isItemExcluded(it));
-    const flagged = allItems.filter(it => it.flagStatus === 'low');
+    const flagged = allItems.filter(isListed);
 
     // build vintage groups across ALL tracked items in this section (not just flagged),
     // so a low item can point to a current vintage that itself isn't flagged
     const groupMap = {};
     allItems.forEach(it => {
-      const { text } = itemSearchText(it);
-      it._vintageYear = extractVintageYear(text);
-      it._baseName = baseNameNoVintage(text);
+      it._vintageYear = itemVintageYear(it);
+      it._baseName = itemBaseName(it);
       if(it._vintageYear !== null){
         if(!groupMap[it._baseName]) groupMap[it._baseName] = [];
         groupMap[it._baseName].push(it);
@@ -1089,6 +1266,9 @@ function escHtml(s){
 
 function buildHTMLSummary(){
   const sections = [
+    { key:'imperial', label:'Imperial Beverage', build: it =>
+        [escHtml(it.description) + (it.isNew ? ' <span style="color:#b45309;">[NEW]</span>' : ''),
+         `On Hand ${fmtNum(it.onHand)} · On Order ${fmtNum(it.onOrder)}`] },
     { key:'alliance', label:'Alliance', build: it =>
         [escHtml(it.description),
          `On Hand ${fmtNum(it.onHand)} · On Order ${fmtNum(it.onOrder)} · Next Receipt ${it.nextReceipt || 'none scheduled'}${it.daysOut!==null ? ' ('+it.daysOut+' days out)' : ''}`] },
@@ -1109,13 +1289,12 @@ function buildHTMLSummary(){
 
   sections.forEach(sec => {
     const allItems = (state[sec.key].items || []).filter(it => !isItemExcluded(it));
-    const flagged = allItems.filter(it => it.flagStatus === 'low');
+    const flagged = allItems.filter(isListed);
 
     const groupMap = {};
     allItems.forEach(it => {
-      const { text } = itemSearchText(it);
-      it._vintageYear = extractVintageYear(text);
-      it._baseName = baseNameNoVintage(text);
+      it._vintageYear = itemVintageYear(it);
+      it._baseName = itemBaseName(it);
       if(it._vintageYear !== null){
         if(!groupMap[it._baseName]) groupMap[it._baseName] = [];
         groupMap[it._baseName].push(it);
@@ -1131,7 +1310,8 @@ function buildHTMLSummary(){
 
     flagged.forEach(it => {
       const [name, stats] = sec.build(it);
-      html += `<div style="margin:0 0 4px;padding:8px 10px;background:#fdeaea;border-left:4px solid #dc2626;">`;
+      const flagLow = it.flagStatus === 'low';
+      html += `<div style="margin:0 0 4px;padding:8px 10px;background:${flagLow ? '#fdeaea' : '#fff6e0'};border-left:4px solid ${flagLow ? '#dc2626' : '#d97706'};">`;
       html += `<div style="font-weight:bold;">${name}</div>`;
       html += `<div style="font-size:12.5px;color:#555;">${stats}</div>`;
       html += `</div>`;
@@ -1172,7 +1352,7 @@ function buildHTMLSummary(){
 }
 
 async function copyFormattedEmail(){
-  const hasAny = state.alliance.items.length || state.vintage.items.length;
+  const hasAny = state.imperial.items.length || state.alliance.items.length || state.vintage.items.length;
   if(!hasAny){
     alert('Upload at least one distributor file first.');
     return;
@@ -1194,6 +1374,8 @@ async function copyFormattedEmail(){
 
 function buildPlainTextSummary(){
   const sections = [
+    { key:'imperial', label:'Imperial Beverage', build: it =>
+        `${it.description}${it.isNew ? ' [NEW]' : ''}\n    On Hand ${fmtNum(it.onHand)} · On Order ${fmtNum(it.onOrder)}` },
     { key:'alliance', label:'Alliance', build: it =>
         `${it.description}\n    On Hand ${fmtNum(it.onHand)} · On Order ${fmtNum(it.onOrder)} · Next Receipt ${it.nextReceipt || 'none scheduled'}${it.daysOut!==null ? ' ('+it.daysOut+' days out)' : ''}` },
     { key:'vintage', label:'Vintage', build: it =>
@@ -1204,13 +1386,12 @@ function buildPlainTextSummary(){
 
   sections.forEach(sec => {
     const allItems = (state[sec.key].items || []).filter(it => !isItemExcluded(it));
-    const flagged = allItems.filter(it => it.flagStatus === 'low');
+    const flagged = allItems.filter(isListed);
 
     const groupMap = {};
     allItems.forEach(it => {
-      const { text } = itemSearchText(it);
-      it._vintageYear = extractVintageYear(text);
-      it._baseName = baseNameNoVintage(text);
+      it._vintageYear = itemVintageYear(it);
+      it._baseName = itemBaseName(it);
       if(it._vintageYear !== null){
         if(!groupMap[it._baseName]) groupMap[it._baseName] = [];
         groupMap[it._baseName].push(it);
@@ -1253,7 +1434,7 @@ function foldMimeLine(base64){
 }
 
 function composeEmail(){
-  const hasAny = state.alliance.rawBase64 || state.vintage.rawBase64;
+  const hasAny = state.imperial.rawBase64 || state.alliance.rawBase64 || state.vintage.rawBase64;
   if(!hasAny){
     alert('Upload at least one distributor file first.');
     return;
@@ -1267,6 +1448,11 @@ function composeEmail(){
   const pdfBase64 = pdfDoc.output('datauristring').split(',')[1]; // strip data:...;base64,
 
   const attachments = [];
+  if(state.imperial.rawBase64) attachments.push({
+    filename: state.imperial.filename || 'Imperial.xlsx',
+    mime: state.imperial.mimeType,
+    base64: state.imperial.rawBase64
+  });
   if(state.alliance.rawBase64) attachments.push({
     filename: state.alliance.filename || 'Alliance.pdf',
     mime: state.alliance.mimeType,
