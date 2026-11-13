@@ -268,6 +268,7 @@
       </div>
       <div class="filename" id="imperial-filename"></div>
       <div class="threshold-row">On Hand flag under <input type="number" id="imperial-onhand" value="5" step="0.5"> cases (nothing on order)</div>
+      <div class="threshold-row">Bota flag under <input type="number" id="imperial-bota-onhand" value="100" step="5"> cases (nothing on order)</div>
       <div class="status-line" id="imperial-status"></div>
     </div>
 
@@ -499,6 +500,8 @@ async function handleImperial(file){
     });
 
     const onHandCutoff = parseFloat(document.getElementById('imperial-onhand').value) || 5;
+    // Bota moves far more volume than anything else, so it gets its own, higher cutoff
+    const botaCutoff = parseFloat(document.getElementById('imperial-bota-onhand').value) || 100;
     const lastKeys = lastImperialKeys();
     const items = [...byKey.values()].map(x => {
       const onHand = round2(x.available - x.onOrder);
@@ -512,7 +515,7 @@ async function handleImperial(file){
       if(onHand < 0.005 && x.onOrder < 0.005){
         // nothing on hand and nothing coming: a real out-of-stock if it has a current vintage, otherwise just empty
         it.flagStatus = x.vintage ? 'low' : 'no stock';
-      } else if(onHand < onHandCutoff && x.onOrder < 0.005){
+      } else if(onHand < (/\bbota\b/i.test(x.name) ? botaCutoff : onHandCutoff) && x.onOrder < 0.005){
         it.flagStatus = 'low';
       } else {
         it.flagStatus = 'ok';
